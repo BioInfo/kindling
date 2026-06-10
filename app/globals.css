@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+/* ── Kindling theme: "tending the fire at night" ────────────────────────────
+   Two palettes driven by [data-theme] on <html>: night (default) is a deep
+   navy hearth lit by ember oranges; day is warm paper with navy ink and the
+   same embers. Recharts can't read these vars in SVG attrs — keep CHART in
+   app/ui.tsx in sync with the values here. */
+
+:root,
+:root[data-theme="dark"] {
+  --bg: #0b1220;           /* deep navy night */
+  --panel: #101a2c;        /* raised navy */
+  --panel-2: #16233a;      /* higher elevation / hover */
+  --border: #21314f;
+  --text: #e9edf5;
+  --muted: #97a3bb;        /* secondary text — AA on --bg */
+  --accent: #fb923c;       /* ember orange, text-legible on navy */
+  --accent-deep: #ea580c;  /* ember fill (white text on top) */
+  --good: #4ade80;
+  --bad: #f87171;
+  --warn: #fbbf24;
+  --warn-strong: #f59e0b;
+  --info: #60a5fa;
+  --good-bg: #4ade80;      /* bright chip fills (dark text on top, both themes) */
+  --warn-bg: #fbbf24;
+  --info-bg: #60a5fa;
+  --overlay: rgba(4, 8, 18, 0.65);
+  --ember-1: #fbbf24;      /* gradient stops: gold → orange → red-orange */
+  --ember-2: #f97316;
+  --ember-3: #ef4444;
+  --glow: rgba(249, 115, 22, 0.28);
+}
+
+:root[data-theme="light"] {
+  --bg: #faf7f2;           /* warm paper, the hearth at morning */
+  --panel: #ffffff;
+  --panel-2: #f3eee6;
+  --border: #e4dccd;
+  --text: #1a2540;         /* navy ink */
+  --muted: #5d6a84;
+  --accent: #c2410c;       /* ember, AA on paper */
+  --accent-deep: #ea580c;
+  --good: #15803d;
+  --bad: #b91c1c;
+  --warn: #a16207;
+  --warn-strong: #b45309;
+  --info: #1d4ed8;
+  --good-bg: #4ade80;
+  --warn-bg: #fbbf24;
+  --info-bg: #93c5fd;
+  --overlay: rgba(26, 22, 12, 0.45);
+  --ember-1: #d97706;
+  --ember-2: #ea580c;
+  --ember-3: #dc2626;
+  --glow: rgba(234, 88, 12, 0.18);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* ── Ember identity ────────────────────────────────────────────────────── */
+
+/* The signature: hero money figures lit like embers. */
+.hero-ember {
+  background: linear-gradient(120deg, var(--ember-1) 0%, var(--ember-2) 55%, var(--ember-3) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 14px var(--glow));
+}
+
+.gradient-ember {
+  background: linear-gradient(135deg, var(--ember-1) 0%, var(--ember-2) 55%, var(--ember-3) 100%);
+}
+.gradient-spark {
+  background: linear-gradient(135deg, #fde68a 0%, var(--ember-1) 45%, var(--ember-2) 100%);
+}
+.ember-glow {
+  box-shadow: 0 0 18px var(--glow), 0 0 44px rgba(249, 115, 22, 0.1);
+}
+
+/* Primary action button — the one loud fill on the page. */
+.btn-ember {
+  background: linear-gradient(135deg, var(--accent-deep) 0%, var(--ember-3) 130%);
+  color: #fff;
+  box-shadow: 0 2px 12px var(--glow);
+  transition: box-shadow 0.2s ease, transform 0.12s ease;
+}
+.btn-ember:hover {
+  box-shadow: 0 4px 20px var(--glow);
+  transform: translateY(-1px);
+}
+
+/* Active tab: ember underline. */
+.tab-ember {
+  position: relative;
+}
+.tab-ember::after {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--ember-1), var(--ember-2), var(--ember-3));
+}
+
+/* The hero breathes like a tended ember — wrapped for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero-ember {
+    animation: emberBreathe 4s ease-in-out infinite alternate;
+  }
+  @keyframes emberBreathe {
+    from { filter: drop-shadow(0 0 10px var(--glow)); }
+    to   { filter: drop-shadow(0 0 20px var(--glow)); }
+  }
+}
+
+.typing::after {
+  content: "";
+  animation: dots 1.2s steps(4, end) infinite;
+}
+@keyframes dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+button { cursor: pointer; }
+
+/* Mac stoplight buttons: faint glyph, brightens on hover. */
+.stoplight { transition: filter 0.12s; }
+.stoplight:hover { filter: brightness(1.15); }

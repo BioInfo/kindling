@@ -1,0 +1,23 @@
+# gitleaks config for plaid-money.
+# The pre-push hook (~/.claude/hooks/recommender/gitleaks-pre-push.py) runs
+# `gitleaks detect --no-git --source .`, which walks the whole working tree and
+# does NOT respect .gitignore. That scans build artifacts and the local DB, which
+# produce false positives (e.g. Next.js auto-generates random preview-mode tokens
+# in .next/prerender-manifest.json and .next/cache/.previewinfo).
+#
+# Allowlisting these gitignored paths keeps every real secret rule active for
+# TRACKED source. Real secrets live in `pass` and are read from env at runtime —
+# they never enter this repo. .next/, node_modules/, and data/ are all gitignored,
+# so nothing allowlisted here can ever reach the remote anyway.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore gitignored build artifacts, vendored deps, and the local finance DB"
+paths = [
+  '''(^|/)\.next/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)data/''',
+  '''(^|/)\.git/''',
+]

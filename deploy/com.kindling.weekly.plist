@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Weekly Kindling digest email. SET_ME template — NOT installed by default;
+  emailing needs your explicit setup. To activate:
+
+    1. Set the recipient/sender (a verified Resend domain) in EnvironmentVariables
+       below, and fix the script path.
+    2. cp deploy/com.kindling.weekly.plist ~/Library/LaunchAgents/
+    3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kindling.weekly.plist
+
+  Fires Mondays at 08:07 local. The script regenerates the week's summary via
+  the always-on prod server and emails it via Resend (key from pass).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kindling.weekly</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>SET_ME/apps/kindling/scripts/weekly-summary.py</string>
+    <string>--send</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>PLAID_API</key>
+    <string>http://localhost:3408</string>
+    <key>PLAID_DIGEST_TO</key>
+    <string>SET_ME@example.com</string>
+    <key>PLAID_DIGEST_FROM</key>
+    <string>SET_ME@your-verified-domain</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>7</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/kindling-weekly.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/kindling-weekly.err</string>
+</dict>
+</plist>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Nightly live-price refresh for manual holdings. SET_ME template: the
+     installed copy lives in ~/Library/LaunchAgents (kept out of git, like the
+     prod plist). Install:
+       cp deploy/com.kindling.quotes.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kindling.quotes.plist
+     Fires daily at 18:10 (after US market close). Requires the prod server up. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kindling.quotes</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>SET_ME/apps/kindling/scripts/refresh-quotes.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>SET_ME/apps/kindling</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>10</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/kindling-quotes.log</string>
+  <key>StandardErrorPath</key><string>/tmp/kindling-quotes.err</string>
+</dict>
+</plist>
