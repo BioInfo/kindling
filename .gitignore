@@ -41,8 +41,8 @@ scripts/seed-*-holdings.mjs
 .playwright-mcp/
 
 # launchagent logs
-plaid.log
-plaid.err.log
+kindling.log
+kindling.err.log
 
 # claude code runtime locks (never track)
 .claude/scheduled_tasks.lock
