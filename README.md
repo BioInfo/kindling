@@ -15,6 +15,11 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/overview.png" alt="Kindling overview (Plaid Sandbox data): ember-lit net worth, insights, 90-day cash-flow forecast" width="820" />
+</p>
+<p align="center"><sub>The night-hearth theme on <strong>Plaid Sandbox data</strong>. Every screenshot in this repo is fake money; real financial data never reaches git.</sub></p>
+
 Real bank data via [Plaid](https://plaid.com), everything else on hardware you
 own, **~$0/year**. A Copilot Money / Monarch replacement built around one idea:
 **your financial data, and the AI that reads it, never have to leave your
@@ -23,10 +28,6 @@ network.**
 Kindling is the daily-money companion in a small family of fire-themed finance
 apps (its sibling **EmberPlan** handles FIRE planning). Kindling is what you
 tend every day so the ember catches. 🔥
-
-> **Why no screenshots?** This repo never ships real financial data: not in
-> code, not in fixtures, not in screenshots. Run it against Plaid Sandbox in
-> two minutes and see it with fake money instead.
 
 ## Why it exists
 
@@ -56,6 +57,11 @@ your network.
   query gated by a validator
 - ✉️ **Weekly digest:** optional plain-English email (Resend)
 - 🌗 **Ember themes:** navy night-hearth dark and warm-paper light, one tap
+
+<p align="center">
+  <img src="docs/screenshots/subscriptions.png" alt="Subscriptions (Plaid Sandbox data): $/mo hero, AI cut-plan actions, category donut" width="820" />
+</p>
+<p align="center"><sub>The subscription leak-ledger, again on Sandbox data: live $/mo hero, what-if-cancel, AI cut-plan.</sub></p>
 
 ## The privacy posture
 

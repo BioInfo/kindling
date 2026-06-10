@@ -34,10 +34,11 @@ scripts/seed-*-holdings.mjs
 
 # screenshots / scratch — may contain real financial data
 *.png
-# …but brand assets are safe and must ship with the repo
+# …but brand assets + Sandbox-data screenshots are safe and must ship
 !app/icon.png
 !app/apple-icon.png
 !public/logo.png
+!docs/screenshots/*.png
 .playwright-mcp/
 
 # launchagent logs
