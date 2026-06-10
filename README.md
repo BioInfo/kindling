@@ -91,6 +91,31 @@ Per-deployment config (gateway URLs, model names) goes in `local.env`: see
 [`local.env.example`](local.env.example). Every AI feature is best-effort and
 degrades cleanly if no gateway is configured.
 
+## Or hand it to your agent
+
+The 2026 install path: paste this into Claude Code (or Cowork, or any capable
+coding agent) and let it drive. It will ask you for the two human steps
+(creating the free Plaid account, approving anything irreversible) and handle
+the rest.
+
+```text
+Install Kindling, the self-hosted personal finance app, from
+https://github.com/BioInfo/kindling. Clone it, check my Node version
+(node:sqlite needs Node 22.5+), install dependencies, and read README.md and
+PLAN.md before changing anything. Then walk me through Plaid credentials:
+help me create a free account at dashboard.plaid.com, find my client_id and
+Sandbox secret, and store them the way I prefer (pass entries
+api-keys/plaid-client-id and api-keys/plaid-secret-sandbox, or exported env
+vars). Generate an APP_ENC_KEY for me with openssl rand -hex 32. Start the
+app with ./run.sh dev, confirm http://localhost:3408 responds, and walk me
+through connecting Plaid's sandbox bank (user_good / pass_good, any OTP).
+LLM features are optional: if I have an OpenAI-compatible endpoint (Ollama
+counts), wire it up via local.env using local.env.example; otherwise skip,
+everything degrades cleanly. When I'm ready for real accounts, walk me
+through Plaid Production access and PLAID_ENV=production, and remind me to
+keep the app private-network-only. Ask before anything irreversible.
+```
+
 ## Going to production
 
 1. Get Plaid Production keys (free tier: 10 Items), store the secret in `pass`
