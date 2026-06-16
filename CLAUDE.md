@@ -2,6 +2,10 @@
 
 Self-hosted personal finance app. Architecture and security model in `PLAN.md`.
 
+**Read first at session start:** [`.claude/CONTINUITY.md`](.claude/CONTINUITY.md) — tactical
+session handoff (status, in-flight, ▶ START HERE). Update it at session end. It's the live
+cursor; `ROADMAP.md` is the backlog and `docs/NEXT-SESSION.md` is the session-history archive.
+
 ## Commit gate (hard rule)
 
 Before EVERY `git commit`, run `npm run typecheck` (`tsc --noEmit`) and confirm
