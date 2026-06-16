@@ -27,8 +27,10 @@ export type QuoteResult = {
 };
 
 const pexec = promisify(execFile);
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+// Do NOT claim to be Chrome: Yahoo's WAF 429s a request whose UA says Chrome but
+// whose TLS fingerprint is curl's (obvious bot). A generic non-Chrome UA passes.
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+const SPARK_CHUNK = 20; // Yahoo spark caps at 20 symbols/request (>20 → 400).
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Absolute path: under launchd a child process's PATH is not reliably propagated,
@@ -76,9 +78,9 @@ export async function fetchQuotes(symbols: string[]): Promise<Map<string, number
   const uniq = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
   if (!uniq.length) return out;
 
-  // Primary: spark batch (crumbless). One request per 50-symbol chunk.
-  for (let i = 0; i < uniq.length; i += 50) {
-    const chunk = uniq.slice(i, i + 50);
+  // Primary: spark batch (crumbless). One request per chunk (≤20 symbols).
+  for (let i = 0; i < uniq.length; i += SPARK_CHUNK) {
+    const chunk = uniq.slice(i, i + SPARK_CHUNK);
     const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(
       chunk.join(",")
     )}&range=1d&interval=1d`;
