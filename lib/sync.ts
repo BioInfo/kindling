@@ -14,7 +14,8 @@ import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 // Returns a per-item summary. Safe to call repeatedly (cursor is persisted).
 export async function syncAllItems() {
   const d = db();
-  const items = d.prepare(`SELECT id, access_token, cursor FROM items WHERE status != 'error'`).all() as {
+  // status='manual' = a held-away account with no Plaid token — never sync it.
+  const items = d.prepare(`SELECT id, access_token, cursor FROM items WHERE status NOT IN ('error','manual')`).all() as {
     id: string;
     access_token: string;
     cursor: string | null;

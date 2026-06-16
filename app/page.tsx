@@ -22,6 +22,7 @@ import { TxnDetailModal } from "./TxnDetail";
 import { TxnDrillModal, type DrillFilter } from "./TxnDrill";
 import { Subscriptions, type SubsData } from "./Subscriptions";
 import { SubscriptionDetailModal } from "./SubscriptionDetail";
+import { AddManualAccountModal, ManualAccountsPanel } from "./ManualAccounts";
 
 type Account = {
   id: string; name: string; mask: string | null; type: string | null;
@@ -94,6 +95,7 @@ export default function Home() {
   const [subDetailId, setSubDetailId] = useState<string | null>(null);
   const [subsBusy, setSubsBusy] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [addManualOpen, setAddManualOpen] = useState(false);
   const [identifyTxn, setIdentifyTxn] = useState<{ id: string; name: string } | null>(null);
   const [merchantName, setMerchantName] = useState<string | null>(null); // merchant detail/edit modal
   const [txnDetailId, setTxnDetailId] = useState<string | null>(null);    // single-txn detail/edit modal
@@ -433,6 +435,8 @@ export default function Home() {
                 <div className="px-1 py-1"><LinkButton onLinked={() => { setOpenMenu(null); sync(); }} /></div>
                 <button onClick={() => { setOpenMenu(null); setTab("networth"); }}
                   className="block w-full rounded px-3 py-2 text-left text-sm" style={{ color: "var(--text)" }}>Manage accounts</button>
+                <button onClick={() => { setOpenMenu(null); setAddManualOpen(true); }}
+                  className="block w-full rounded px-3 py-2 text-left text-sm" style={{ color: "var(--text)" }}>Add manual account</button>
                 <button onClick={() => { setOpenMenu(null); exportCsv(); }}
                   className="block w-full rounded px-3 py-2 text-left text-sm" style={{ color: "var(--text)" }}>
                   Export CSV{entity === "business" ? " (business)" : ""}
@@ -660,6 +664,7 @@ export default function Home() {
             <h2 className="mb-2 font-semibold">Accounts</h2>
             <AccountsGrid accounts={accounts} onSelect={setDetailId} />
           </div>
+          <ManualAccountsPanel onChanged={load} />
           <AssetsPanel data={assets} reload={loadAssets} />
         </div>
       )}
@@ -683,6 +688,7 @@ export default function Home() {
 
       {tab === "tax" && <TaxPanel data={tax} reload={loadTax} />}
 
+      {addManualOpen && <AddManualAccountModal onClose={() => setAddManualOpen(false)} onCreated={load} />}
       {detailId && <AccountDetailModal id={detailId} onClose={() => setDetailId(null)} onIdentify={setIdentifyTxn} onMerchant={setMerchantName} onTxn={setTxnDetailId} />}
       {drill && <TxnDrillModal filter={drill} onClose={() => setDrill(null)} onIdentify={setIdentifyTxn} onMerchant={setMerchantName} onTxn={setTxnDetailId} />}
       {identifyTxn && <IdentifyModal txn={identifyTxn} onClose={() => setIdentifyTxn(null)} onApplied={() => { load(); loadFeed(); }} />}

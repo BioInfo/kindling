@@ -110,7 +110,7 @@ type Detail = {
     type: string | null; subtype: string | null; current_balance: number | null;
     available_balance: number | null; currency: string | null; updated_at: string | null;
     institution: string | null; item_status: string | null; last_synced_at: string | null;
-    owner: string | null;
+    owner: string | null; manual?: boolean;
   };
   txns: { id: string; date: string; name: string; merchant: string | null; amount: number; currency: string | null; pending: number; category: string | null; entity: string | null }[];
   txnStats: { n: number; first: string | null; last: string | null };
@@ -144,7 +144,10 @@ export function AccountDetailModal({ id, onClose, onIdentify, onMerchant, onTxn 
           <>
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <div className="text-lg font-semibold">{d.account.name}{d.account.mask ? ` ··${d.account.mask}` : ""}</div>
+                <div className="text-lg font-semibold">
+                  {d.account.name}{d.account.mask ? ` ··${d.account.mask}` : ""}
+                  {d.account.manual && <span className="ml-2 align-middle rounded px-1.5 py-0.5 text-xs font-normal" style={{ background: "var(--bg)", color: "var(--muted)" }}>manual</span>}
+                </div>
                 {d.account.official_name && d.account.official_name !== d.account.name && (
                   <div className="text-xs" style={{ color: "var(--muted)" }}>{d.account.official_name}</div>
                 )}

@@ -18,6 +18,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
      FROM accounts a JOIN items i ON a.item_id = i.id WHERE a.id = ?`
   ).get(id) as Record<string, unknown> | undefined;
   if (!account) return NextResponse.json({ error: "unknown account" }, { status: 404 });
+  // Held-away account entered by hand (no Plaid item) — the UI badges it.
+  account.manual = account.item_status === "manual";
 
   // Owner heuristic: brokerage account names embed the owner ("Jane Quinn
   // Public - Brokerage Account - ****0958"). Take the leading segment if it

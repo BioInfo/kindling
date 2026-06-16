@@ -1,6 +1,7 @@
 import { plaid } from "./plaid";
 import { db } from "./db";
 import { decrypt } from "./crypto";
+import { recomputeManualAccountBalances } from "./accounts";
 import type { Holding as PlaidHolding, Security as PlaidSecurity } from "plaid";
 
 // Investment holdings: the composition (tickers, shares, value) behind the
@@ -20,7 +21,7 @@ function investmentItems(): { id: string; institution: string | null; access_tok
   return db().prepare(
     `SELECT DISTINCT i.id, i.institution, i.access_token
      FROM items i JOIN accounts a ON a.item_id = i.id
-     WHERE a.type = 'investment' AND i.status != 'error'`
+     WHERE a.type = 'investment' AND i.status NOT IN ('error','manual')`
   ).all() as unknown as { id: string; institution: string | null; access_token: string }[];
 }
 
@@ -129,11 +130,14 @@ export function addManualHolding(h: ManualHolding): { account_id: string; securi
        institution_value=excluded.institution_value, cost_basis=excluded.cost_basis,
        source='manual', updated_at=datetime('now')`
   ).run(h.account_id, security_id, h.quantity ?? null, h.price ?? null, h.value ?? null, h.cost_basis ?? null);
+  // A manual (held-away) account's balance tracks its holdings — keep net worth honest.
+  recomputeManualAccountBalances();
   return { account_id: h.account_id, security_id };
 }
 
 export function deleteManualHolding(account_id: string, security_id: string): void {
   db().prepare(`DELETE FROM holdings WHERE account_id=? AND security_id=? AND source='manual'`).run(account_id, security_id);
+  recomputeManualAccountBalances();
 }
 
 // Investment accounts that can take manual holdings — those whose item can't be
@@ -206,7 +210,7 @@ export function listHoldings(): Investments {
     `SELECT i.id AS item_id, COALESCE(i.institution_name, i.institution) AS institution,
             GROUP_CONCAT(a.name, '||') AS accounts
      FROM items i JOIN accounts a ON a.item_id = i.id
-     WHERE a.type = 'investment' AND i.status != 'error'
+     WHERE a.type = 'investment' AND i.status NOT IN ('error','manual')
        AND NOT EXISTS (
          SELECT 1 FROM holdings h JOIN accounts a2 ON a2.id = h.account_id
          WHERE a2.item_id = i.id)

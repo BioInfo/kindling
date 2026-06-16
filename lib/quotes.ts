@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { db } from "./db";
+import { recomputeManualAccountBalances } from "./accounts";
 
 // Live quotes for hand-entered (manual) holdings — the positions Plaid can't sync
 // (e.g. Ally Invest). Source: Yahoo Finance (no key). Only tickers leave your
@@ -169,5 +170,8 @@ export async function refreshManualQuotes(): Promise<QuoteResult> {
     holdingsRepriced += Number(res.changes ?? 0);
   }
 
+  // Live price moves on a held-away account's holdings are organic growth — flow them
+  // into the manual account balance so net worth and the trend reflect them.
+  recomputeManualAccountBalances();
   return { updated, missed, holdingsRepriced };
 }
