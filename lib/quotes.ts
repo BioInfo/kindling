@@ -1,9 +1,15 @@
 import { db } from "./db";
 
 // Live quotes for hand-entered (manual) holdings — the positions Plaid can't sync
-// (e.g. Ally Invest). Source: Stooq's free CSV endpoint (no key). Only tickers
-// leave your network, which reveal little. Misses (delisted, crypto, odd symbols)
+// (e.g. Ally Invest). Source: Yahoo Finance's public chart endpoint (no key). Only
+// tickers leave your network, which reveal little. Misses (delisted, odd symbols)
 // are left untouched, not zeroed.
+//
+// Was Stooq's CSV endpoint until 2026-06; Stooq retired the free /q/l/ lite quote
+// (now serves a "page does not exist" stub) and gated the daily CSV behind a JS
+// anti-bot wall, so every symbol came back missed. Yahoo's v8 chart endpoint is
+// public (no crumb/cookie like the v10 quoteSummary route) and covers equities,
+// ETFs, mutual funds, and crypto via the -USD suffix.
 
 export type QuoteResult = {
   updated: { ticker: string; price: number }[];
@@ -11,25 +17,36 @@ export type QuoteResult = {
   holdingsRepriced: number;
 };
 
-// Stooq: https://stooq.com/q/l/?s=aapl.us&f=sd2t2ohlcv&h&e=csv
-// → "Symbol,Date,Time,Open,High,Low,Close,Volume" then a data row; Close is N/D on miss.
-export async function fetchQuote(ticker: string): Promise<number | null> {
-  const sym = ticker.trim().toLowerCase();
+// Yahoo: https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1d
+// → JSON; price at chart.result[0].meta.regularMarketPrice. For crypto pass
+// { crypto: true } so we query BTC-USD, not the same-named "BTC"/"ETH" equity
+// (bare "ETH" on Yahoo is a $17 stock, not Ethereum).
+export async function fetchQuote(
+  ticker: string,
+  opts: { crypto?: boolean } = {}
+): Promise<number | null> {
+  const sym = ticker.trim().toUpperCase();
   if (!sym) return null;
-  const url = `https://stooq.com/q/l/?s=${encodeURIComponent(sym)}.us&f=sd2t2ohlcv&h&e=csv`;
+  const yahooSym = opts.crypto ? `${sym}-USD` : sym;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?interval=1d&range=1d`;
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "kindling/1.0" } });
+    // Yahoo 429s the default fetch UA; a browser UA gets the public JSON.
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      },
+    });
     clearTimeout(t);
     if (!res.ok) return null;
-    const text = await res.text();
-    const line = text.trim().split("\n")[1];
-    if (!line) return null;
-    const close = line.split(",")[6];
-    if (!close || close === "N/D") return null;
-    const n = Number(close);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    const data = (await res.json()) as {
+      chart?: { result?: { meta?: { regularMarketPrice?: number } }[] | null };
+    };
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    return typeof price === "number" && Number.isFinite(price) && price > 0 ? price : null;
   } catch {
     return null;
   }
@@ -37,20 +54,24 @@ export async function fetchQuote(ticker: string): Promise<number | null> {
 
 export async function refreshManualQuotes(): Promise<QuoteResult> {
   const d = db();
-  // Distinct tickers across manual holdings (skip cash + crypto — no clean quote).
-  const tickers = (d.prepare(
-    `SELECT DISTINCT s.ticker AS ticker
+  // Distinct tickers across manual holdings, with a crypto flag (true if ANY row
+  // for that ticker is typed cryptocurrency — BTC/ETH carry both a crypto and an
+  // etf-typed row; both are the coin and want the -USD quote). Skip cash only.
+  const tickers = d.prepare(
+    `SELECT s.ticker AS ticker,
+            MAX(CASE WHEN COALESCE(s.type,'') = 'cryptocurrency' THEN 1 ELSE 0 END) AS is_crypto
      FROM holdings h JOIN securities s ON s.id = h.security_id
      WHERE h.source = 'manual' AND s.ticker IS NOT NULL AND s.ticker != ''
-       AND COALESCE(s.type,'') NOT IN ('cash','cryptocurrency')`
-  ).all() as { ticker: string }[]).map((r) => r.ticker);
+       AND COALESCE(s.type,'') != 'cash'
+     GROUP BY s.ticker`
+  ).all() as { ticker: string; is_crypto: number }[];
 
   const updated: { ticker: string; price: number }[] = [];
   const missed: string[] = [];
   let holdingsRepriced = 0;
 
-  for (const ticker of tickers) {
-    const price = await fetchQuote(ticker);
+  for (const { ticker, is_crypto } of tickers) {
+    const price = await fetchQuote(ticker, { crypto: is_crypto === 1 });
     if (price == null) { missed.push(ticker); continue; }
     updated.push({ ticker, price });
     // Update every manual security with this ticker, and reprice its holdings
