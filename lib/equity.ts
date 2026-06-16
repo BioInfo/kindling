@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { fetchQuote } from "./quotes";
+import { fetchQuotes } from "./quotes";
 
 // Equity compensation: RSU / option / ESPP grants that vest over time. See
 // equity_grants in db.ts for the schema + the connection-aware design. Only
@@ -216,8 +216,9 @@ export function deleteGrant(id: number): void {
 
 export type EquityQuoteResult = { updated: { ticker: string; price: number }[]; missed: string[]; grantsRepriced: number };
 
-// Refresh cached prices for every distinct grant ticker via Stooq (tickers only
-// leave your network). Misses are left at their last value, not zeroed.
+// Refresh cached prices for every distinct grant ticker (equity comp, so always
+// equities — no crypto). One batched Yahoo quote call; tickers only leave your
+// network. Misses are left at their last value, not zeroed.
 export async function refreshEquityQuotes(): Promise<EquityQuoteResult> {
   const d = db();
   const tickers = (d.prepare(
@@ -226,8 +227,9 @@ export async function refreshEquityQuotes(): Promise<EquityQuoteResult> {
   const updated: { ticker: string; price: number }[] = [];
   const missed: string[] = [];
   let grantsRepriced = 0;
+  const prices = await fetchQuotes(tickers.map((t) => t.toUpperCase()));
   for (const ticker of tickers) {
-    const price = await fetchQuote(ticker);
+    const price = prices.get(ticker.toUpperCase());
     if (price == null) { missed.push(ticker); continue; }
     updated.push({ ticker, price });
     const res = d.prepare(
