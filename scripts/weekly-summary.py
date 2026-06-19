@@ -19,6 +19,12 @@ Usage:
 import json
 import os
 import subprocess
+
+def _pass_cmd(entry):
+    """launchd-safe secret read: loopback-gpg passx (no gpg-agent hang) -> pass fallback."""
+    import os
+    _px = os.path.expanduser("~/.local/bin/passx")
+    return [_px, entry] if os.path.exists(_px) else ["pass", entry]
 import sys
 import urllib.request
 
@@ -41,7 +47,7 @@ def warm_model() -> None:
     through and let fetch_summary surface its own error.
     """
     key = subprocess.run(
-        ["pass", "api-keys/litellm-vk-finance"], capture_output=True, text=True
+        _pass_cmd("api-keys/litellm-vk-finance"), capture_output=True, text=True
     ).stdout.strip().splitlines()
     if not key or not key[0]:
         print("warm: no vk-finance key in pass — skipping warmup", file=sys.stderr)
@@ -89,7 +95,7 @@ def subject(summary: dict) -> str:
 
 def send_via_resend(to: str, frm: str, subj: str, html: str) -> None:
     key = subprocess.run(
-        ["pass", "api-keys/resend"], capture_output=True, text=True
+        _pass_cmd("api-keys/resend"), capture_output=True, text=True
     ).stdout.strip().splitlines()
     if not key or not key[0]:
         sys.exit("no Resend key in `pass api-keys/resend`")
