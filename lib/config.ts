@@ -33,6 +33,6 @@ export const config = {
   llm: {
     baseUrl: process.env.LITELLM_BASE_URL ?? "http://localhost:4000/v1",
     apiKey: process.env.LITELLM_API_KEY ?? "",
-    model: process.env.FINANCE_LLM_MODEL ?? "deepseek-v4-flash",
+    model: process.env.FINANCE_LLM_MODEL ?? "deepseek-flash-latest",
   },
 };

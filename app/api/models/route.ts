@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // a code change by setting FINANCE_MODELS to a JSON array of the same shape.
 const CURATED = [
   {
-    id: "deepseek-v4-flash",
+    id: "deepseek-flash-latest",
     label: "DeepSeek V4 Flash (fast)",
     location: "remote" as const,
     provider: "DeepSeek",

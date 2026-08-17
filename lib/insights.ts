@@ -318,7 +318,7 @@ export async function narrateLede(insights: Insight[]): Promise<{ lede: string; 
   const hit = cachedLede(sig);
   if (hit) return { lede: hit.lede, model: hit.model ?? "" };
 
-  const model = process.env.FINANCE_LLM_MODEL ?? "deepseek-v4-flash";
+  const model = process.env.FINANCE_LLM_MODEL ?? "deepseek-flash-latest";
   try {
     const raw = await chat(
       [

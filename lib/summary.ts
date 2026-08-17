@@ -147,7 +147,7 @@ non-zero, you may note it as "$X newly linked (excluded from the change)" but ne
 a jump. No preamble, no disclaimer, no markdown headers. Plain, direct, useful.`;
 
 export async function narrate(stats: SummaryStats, model?: string): Promise<{ narrative: string; model: string }> {
-  const m = model ?? process.env.FINANCE_LLM_MODEL ?? "deepseek-v4-flash";
+  const m = model ?? process.env.FINANCE_LLM_MODEL ?? "deepseek-flash-latest";
   const narrative = await chat(
     [
       { role: "system", content: SYSTEM },
@@ -418,7 +418,7 @@ Note mtdSpend only as "so far this month" context, never compared head-to-head w
 No preamble, no markdown headers. Plain, direct, useful.`;
 
 export async function narrateMonthly(stats: MonthlyStats, model?: string): Promise<{ narrative: string; model: string }> {
-  const m = model ?? process.env.FINANCE_LLM_MODEL ?? "deepseek-v4-flash";
+  const m = model ?? process.env.FINANCE_LLM_MODEL ?? "deepseek-flash-latest";
   const narrative = await chat(
     [
       { role: "system", content: MONTHLY_SYSTEM },
