@@ -56,7 +56,7 @@ ${snippets.length ? snippets.map((s, i) => `${i + 1}. ${s.title} — ${s.content
 
   let out: Record<string, unknown> | null = null;
   try {
-    const reply = await chat([{ role: "system", content: SYSTEM }, { role: "user", content: userMsg }], { maxTokens: 500 });
+    const reply = await chat([{ role: "system", content: SYSTEM }, { role: "user", content: userMsg }], { maxTokens: 1500 });
     out = extractJson(reply);
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 502 });

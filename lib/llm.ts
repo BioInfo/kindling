@@ -24,10 +24,15 @@ export async function chat(
       temperature: opts.temperature ?? 0,
       max_tokens: opts.maxTokens ?? 1024,
       messages,
-      // Non-reasoning: OpenRouter honors reasoning.enabled=false on the
-      // deepseek-flash route. Keeps replies fast + structured (no reasoning
-      // tokens eating the small max_tokens budget). Ignored by models that
-      // do not support it.
+      // Non-reasoning. `thinking: {type:"disabled"}` is the one shape this
+      // gateway actually honors on deepseek-flash: measured 2026-09-19,
+      // reasoning_tokens 0 with it, 131-495 without. `reasoning.enabled=false`
+      // and `reasoning_effort:"none"` are BOTH silently ignored here — they
+      // return HTTP 200 and reason anyway. Kept alongside for a provider swap
+      // (OpenRouter reads the reasoning shape); unknown keys are dropped.
+      // Reasoning tokens are billed against max_tokens, so an ignored flag
+      // spends the whole budget thinking and returns content: null.
+      thinking: { type: "disabled" },
       reasoning: { enabled: false },
     }),
     // Cold-start of the on-demand NVFP4 vLLM can take ~30-60s on first call.
@@ -42,7 +47,22 @@ export async function chat(
     throw new Error(`LLM gateway ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content ?? "";
+  // A truncated reply is not an empty one. When the model burns max_tokens on
+  // reasoning, content comes back null with finish_reason "length" — the caller
+  // then reports "could not parse model reply", which points at the parser and
+  // not at the budget. Name the real fault. (Measured 2026-09-19: 5 of 8 identify
+  // calls truncated at max_tokens 500 with 482 reasoning tokens.)
+  if (!content && choice?.finish_reason === "length") {
+    const rt = data.usage?.completion_tokens_details?.reasoning_tokens;
+    throw new Error(
+      `LLM reply truncated at max_tokens (finish_reason=length` +
+      (rt ? `, ${rt} reasoning tokens` : "") +
+      `) — raise maxTokens or disable reasoning for this model.`
+    );
+  }
+  return content;
 }
 
 // Pulls the first JSON array or object out of a model reply, tolerating
