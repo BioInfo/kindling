@@ -27,4 +27,4 @@ export FINANCE_DB_PATH="${FINANCE_DB_PATH:-$PWD/data/finance.db}"
 if [ ! -f .next/BUILD_ID ] || [ -n "$(find app lib -type f \( -name "*.ts" -o -name "*.tsx" \) -newer .next/BUILD_ID 2>/dev/null | head -1)" ]; then
   npm run build || exit 1
 fi
-exec npm run start   # next start (production server)
+exec npm run start -- -H 127.0.0.1   # next start (production server)
