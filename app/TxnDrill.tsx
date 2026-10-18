@@ -21,14 +21,15 @@ export function TxnDrillModal({
 }) {
   const z = useModalZ();
   const [rows, setRows] = useState<Txn[] | null>(null);
+  const [err, setErr] = useState(false);
 
   useEffect(() => {
-    setRows(null);
+    setRows(null); setErr(false);
     const p = new URLSearchParams({ limit: "200" });
     if (filter.category) p.set("category", filter.category);
     if (filter.q) p.set("q", filter.q);
     if (filter.days) p.set("days", String(filter.days));
-    fetch(`/api/transactions?${p.toString()}`).then((r) => r.json()).then((x) => setRows(x.txns ?? []));
+    fetch(`/api/transactions?${p.toString()}`).then((r) => r.json()).then((x) => setRows(x.txns ?? [])).catch(() => setErr(true));
   }, [filter.category, filter.q, filter.days]);
 
   // Outflow subtotal (Plaid sign: + = outflow), so the header echoes the bar/node.
@@ -42,7 +43,7 @@ export function TxnDrillModal({
           <div>
             <div className="text-lg font-semibold">{filter.title}</div>
             <div className="text-xs" style={{ color: "var(--muted)" }}>
-              {rows == null ? "Loading…" : `${rows.length} transaction${rows.length === 1 ? "" : "s"}`}
+              {err ? "Couldn’t load transactions." : rows == null ? "Loading…" : `${rows.length} transaction${rows.length === 1 ? "" : "s"}`}
               {filter.days ? ` · last ${filter.days} days` : ""}
               {rows && outflow > 0 ? ` · ${money(outflow)} out` : ""}
             </div>
@@ -51,7 +52,7 @@ export function TxnDrillModal({
         </div>
 
         {rows == null ? (
-          <div className="p-6 text-center" style={{ color: "var(--muted)" }}>Loading…</div>
+          <div className="p-6 text-center" style={{ color: err ? "var(--bad)" : "var(--muted)" }}>{err ? "Couldn’t load transactions." : "Loading…"}</div>
         ) : rows.length === 0 ? (
           <div className="rounded-xl p-4 text-center text-sm" style={{ color: "var(--muted)", background: "var(--bg)" }}>No matching transactions.</div>
         ) : (

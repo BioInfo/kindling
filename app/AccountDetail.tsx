@@ -129,9 +129,14 @@ export function AccountDetailModal({ id, onClose, onIdentify, onMerchant, onTxn 
 }) {
   const z = useModalZ();
   const [d, setD] = useState<Detail | null>(null);
+  const [err, setErr] = useState(false);
   useEffect(() => {
-    setD(null);
-    fetch(`/api/accounts/${encodeURIComponent(id)}`).then((r) => r.json()).then((x) => setD(x.account ? x : null));
+    let live = true;
+    setD(null); setErr(false);
+    fetch(`/api/accounts/${encodeURIComponent(id)}`).then((r) => r.json())
+      .then((x) => { if (!live) return; if (x.account) setD(x); else setErr(true); })
+      .catch(() => { if (live) setErr(true); });
+    return () => { live = false; };
   }, [id]);
 
   return (
@@ -139,7 +144,7 @@ export function AccountDetailModal({ id, onClose, onIdentify, onMerchant, onTxn 
       style={{ zIndex: z, background: "var(--overlay)" }}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-3xl rounded-2xl p-5" style={{ ...panel, marginTop: "2vh" }}>
         {!d ? (
-          <div className="p-6 text-center" style={{ color: "var(--muted)" }}>Loading…</div>
+          <div className="p-6 text-center" style={{ color: err ? "var(--bad)" : "var(--muted)" }}>{err ? "Couldn’t load this account." : "Loading…"}</div>
         ) : (
           <>
             <div className="mb-3 flex items-start justify-between gap-3">
