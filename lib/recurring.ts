@@ -78,10 +78,20 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
      ORDER BY date ASC`
   ).all(...(args as never[])) as unknown as Row[];
 
+  // A stream the user dismissed on the Subscriptions surface ("not recurring")
+  // must not come back here and be scheduled by the forecast, digest or alerts.
+  const dismissed = new Set(
+    (db().prepare(
+      `SELECT merchant_key, direction FROM subscriptions WHERE state = 'dismissed'${opts.entity ? " AND entity = ?" : ""}`
+    ).all(...((opts.entity ? [opts.entity] : []) as never[])) as { merchant_key: string; direction: string }[])
+      .map((d) => d.merchant_key + (d.direction === "income" ? "|in" : "|out"))
+  );
+
   const groups = new Map<string, Row[]>();
   for (const r of rows) {
     const key = norm(r.merchant) + (r.amount >= 0 ? "|out" : "|in");
     if (key.startsWith("|")) continue; // unnameable
+    if (dismissed.has(key)) continue;
     let arr = groups.get(key);
     if (!arr) { arr = []; groups.set(key, arr); }
     arr.push(r);
