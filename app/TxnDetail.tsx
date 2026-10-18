@@ -74,7 +74,7 @@ export function TxnDetailModal({
 
   useEffect(() => {
     let live = true;
-    setD(null); setErr(false); setSaved(null); setScam(null); setScamErr(null);
+    setD(null); setErr(false); setSaved(null); setScam(null); setScamErr(null); setDraft(null); setDraftErr(null);
     fetch(`/api/transactions/${encodeURIComponent(id)}/detail`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((x: Detail) => {
