@@ -3,6 +3,7 @@ import { plaid, institutionName } from "@/lib/plaid";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { syncConnectionEvents } from "@/lib/networth";
+import { mergeRelinkedItem } from "@/lib/relink";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +65,13 @@ export async function POST(req: NextRequest) {
     // freshly-visible balance never reads as net-worth growth in the trend.
     syncConnectionEvents();
 
-    return NextResponse.json({ ok: true, item_id: itemId, accounts: acctRes.data.accounts.length });
+    // Linking a bank that is already here (instead of using Reconnect, which is
+    // update mode) makes a second item for the same accounts. Fold the old one in
+    // so nothing counts twice. Its history moves over on the first sync's dedupe.
+    let merged: Awaited<ReturnType<typeof mergeRelinkedItem>> = [];
+    try { merged = await mergeRelinkedItem(itemId); } catch (e) { console.error("relink merge failed", e); }
+
+    return NextResponse.json({ ok: true, item_id: itemId, accounts: acctRes.data.accounts.length, merged });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ error: msg }, { status: 500 });

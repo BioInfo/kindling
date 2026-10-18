@@ -1,4 +1,4 @@
-import { plaid } from "./plaid";
+import { plaid, classifyPlaidError } from "./plaid";
 import { db } from "./db";
 import { decrypt } from "./crypto";
 import { recomputeManualAccountBalances } from "./accounts";
@@ -21,7 +21,7 @@ function investmentItems(): { id: string; institution: string | null; access_tok
   return db().prepare(
     `SELECT DISTINCT i.id, i.institution, i.access_token
      FROM items i JOIN accounts a ON a.item_id = i.id
-     WHERE a.type = 'investment' AND i.status NOT IN ('error','manual')`
+     WHERE a.type = 'investment' AND i.status NOT IN ('error','re-auth','manual')`
   ).all() as unknown as { id: string; institution: string | null; access_token: string }[];
 }
 
@@ -53,9 +53,20 @@ export async function syncHoldings(): Promise<SyncResult> {
     `DELETE FROM holdings WHERE source='plaid' AND account_id IN (SELECT id FROM accounts WHERE item_id = ?)`
   );
 
+  const setBalance = d.prepare(
+    `UPDATE accounts SET current_balance = ?, available_balance = ?, updated_at = datetime('now')
+     WHERE id = ? AND item_id = ?`
+  );
+
   for (const item of items) {
     try {
       const res = await plaid.investmentsHoldingsGet({ access_token: decrypt(item.access_token) });
+      // Investments-only items (e.g. Vanguard) never get balances from
+      // transactionsSync, so take them from this response or net worth goes stale.
+      for (const a of res.data.accounts) {
+        if (a.balances.current == null) continue;
+        setBalance.run(a.balances.current, a.balances.available ?? null, a.account_id, item.id);
+      }
       // Replace this item's holdings wholesale so sold/closed positions vanish.
       clearItemHoldings.run(item.id);
       for (const s of res.data.securities as PlaidSecurity[]) {
@@ -90,8 +101,11 @@ export async function syncHoldings(): Promise<SyncResult> {
         // (or the institution can't do holdings). Offer the re-consent flow.
         result.consentNeeded.push({ item_id: item.id, institution: item.institution });
       } else {
-        const message = e instanceof Error ? e.message : String(e);
-        result.errors.push({ item_id: item.id, message });
+        const err = classifyPlaidError(e);
+        // Investments-only items (Vanguard, Fidelity) have no transactions to
+        // fail on, so a dead login can surface only here. Flag it for reconnect.
+        if (err.status === "re-auth") d.prepare(`UPDATE items SET status='re-auth', error=? WHERE id=?`).run(err.message, item.id);
+        result.errors.push({ item_id: item.id, message: err.message });
       }
     }
   }

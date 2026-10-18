@@ -14,7 +14,8 @@ export const dynamic = "force-dynamic";
 // is granted server-side and holdings calls start working (no token exchange).
 export async function POST(req: NextRequest) {
   try {
-    const { item_id } = await req.json();
+    // mode "reauth" = the bank login expired; just redo the login, ask for no new products.
+    const { item_id, mode } = await req.json();
     if (!item_id) {
       return NextResponse.json({ error: "missing item_id" }, { status: 400 });
     }
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
       user: { client_user_id: "local-user" },
       client_name: "Kindling",
       access_token: decrypt(row.access_token), // update mode
-      additional_consented_products: config.plaid.additionalConsentedProducts as Products[],
+      ...(mode === "reauth" ? {} : { additional_consented_products: config.plaid.additionalConsentedProducts as Products[] }),
       country_codes: config.plaid.countryCodes as CountryCode[],
       language: "en",
     });

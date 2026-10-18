@@ -124,7 +124,8 @@ function CalendarView({ subs }: { subs: Subscription[] }) {
 
   // date → charges
   const byDay = new Map<string, { merchant: string; amount: number }[]>();
-  const active = subs.filter((s) => s.state === "active" || s.state === "trial");
+  // Lapsed streams (no charge in ~2 cycles) are history, not upcoming charges.
+  const active = subs.filter((s) => (s.state === "active" || s.state === "trial") && s.isActive);
   for (const s of active) {
     for (const d of occurrencesInMonth(s, monthStart, monthEnd)) {
       const arr = byDay.get(d) ?? []; arr.push({ merchant: s.merchant, amount: s.lastAmount }); byDay.set(d, arr);

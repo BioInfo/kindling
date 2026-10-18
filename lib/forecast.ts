@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { detectRecurring } from "./recurring";
+import { detectRecurring, isLapsed } from "./recurring";
 
 // Cash-flow forecast: project liquid cash forward from detected recurring income
 // + bills, plus an optional discretionary burn layer (v2). The scheduled layer
@@ -186,6 +186,8 @@ export function forecast(opts: { days?: number; discretionary?: boolean } = {}):
 
   const events: ForecastEvent[] = [];
   for (const r of rec) {
+    // Without this a stream that stopped months ago is projected forever.
+    if (isLapsed(r.lastDate, r.intervalDays, startDate)) continue;
     const step = Math.max(1, r.intervalDays);
     // Walk forward from the last seen charge by the cadence until we're past
     // today, then emit each occurrence that lands inside the horizon. This

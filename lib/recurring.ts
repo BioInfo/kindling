@@ -30,6 +30,14 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export const norm = (s: string) =>
   s.toLowerCase().replace(/\s+#?\d{2,}.*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
 
+// A stream that has missed two cycles (plus a week of slack) has stopped: a
+// cancelled service, a finished course of therapy. Keep it in history, but stop
+// scheduling it. Same rule the subscriptions surface uses for is_active.
+export function isLapsed(lastDate: string, intervalDays: number, asOf = new Date().toISOString().slice(0, 10)): boolean {
+  const since = (Date.parse(asOf + "T00:00:00Z") - Date.parse(lastDate + "T00:00:00Z")) / 86400000;
+  return since > Math.max(1, intervalDays) * 2 + 7;
+}
+
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);

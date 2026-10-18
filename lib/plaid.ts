@@ -46,3 +46,19 @@ export async function backfillInstitutionNames(): Promise<number> {
   }
   return n;
 }
+
+// Plaid error codes that mean the bank login itself has to be redone in Link
+// update mode. Anything else is a generic 'error' (outage, rate limit, bug).
+const REAUTH_CODES = new Set([
+  "ITEM_LOGIN_REQUIRED", "PENDING_EXPIRATION", "PENDING_DISCONNECT", "INVALID_CREDENTIALS",
+  "INVALID_MFA", "ITEM_LOCKED", "USER_SETUP_REQUIRED", "INSUFFICIENT_CREDENTIALS", "ACCESS_NOT_GRANTED",
+]);
+
+// axios hides Plaid's error_code behind a bare "Request failed with status code
+// 400", which is all items.error used to hold. Pull the real code + message.
+export function classifyPlaidError(e: unknown): { status: "re-auth" | "error"; code: string | null; message: string } {
+  const data = (e as { response?: { data?: { error_code?: string; error_message?: string } } })?.response?.data;
+  const code = data?.error_code ?? null;
+  const text = data?.error_message ?? (e instanceof Error ? e.message : String(e));
+  return { status: code && REAUTH_CODES.has(code) ? "re-auth" : "error", code, message: code ? `${code}: ${text}` : text };
+}

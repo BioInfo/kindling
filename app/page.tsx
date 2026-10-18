@@ -23,6 +23,7 @@ import { TxnDrillModal, type DrillFilter } from "./TxnDrill";
 import { Subscriptions, type SubsData } from "./Subscriptions";
 import { SubscriptionDetailModal } from "./SubscriptionDetail";
 import { AddManualAccountModal, ManualAccountsPanel } from "./ManualAccounts";
+import { ConnectionHealth } from "./Connections";
 
 type Account = {
   id: string; name: string; mask: string | null; type: string | null;
@@ -301,7 +302,8 @@ export default function Home() {
   };
 
   const run = async (label: string, fn: () => Promise<void>) => { setBusy(label); await fn(); setBusy(null); };
-  const sync = () => run("sync", async () => { await fetch("/api/sync", { method: "POST" }); await load(); await loadForecast(); await loadFeed(); await loadSubscriptions(); });
+  const [connTick, setConnTick] = useState(0);
+  const sync = () => run("sync", async () => { await fetch("/api/sync", { method: "POST" }); setConnTick((n) => n + 1); await load(); await loadForecast(); await loadFeed(); await loadSubscriptions(); });
   const aiCat = () => run("ai", async () => { await fetch("/api/categorize", { method: "POST" }); await load(); await loadFeed(); loadReview(); });
   const genSummary = () => run("summary", async () => {
     const r = await fetch("/api/summary", { method: "POST" }).then((x) => x.json());
@@ -446,6 +448,7 @@ export default function Home() {
           </div>
         </div>
       </header>
+      <ConnectionHealth refreshKey={connTick} onFixed={sync} />
 
       <nav className="mb-4 flex flex-wrap gap-2">
         {tabBtn("overview", "Overview")}

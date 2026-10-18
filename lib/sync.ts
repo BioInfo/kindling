@@ -1,4 +1,4 @@
-import { plaid } from "./plaid";
+import { plaid, classifyPlaidError } from "./plaid";
 import { db } from "./db";
 import { decrypt } from "./crypto";
 import { applyRules } from "./categorize";
@@ -7,6 +7,7 @@ import { captureSnapshot } from "./networth";
 import { syncHoldings } from "./holdings";
 import { refreshEquityQuotes } from "./equity";
 import { reconcileSubscriptions } from "./subscriptions";
+import { dedupeMergedTransactions } from "./relink";
 import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 
 // Pulls new/modified/removed transactions for every Item via the cursor-based
@@ -15,7 +16,9 @@ import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 export async function syncAllItems() {
   const d = db();
   // status='manual' = a held-away account with no Plaid token — never sync it.
-  const items = d.prepare(`SELECT id, access_token, cursor FROM items WHERE status NOT IN ('error','manual')`).all() as {
+  // 'error' and 're-auth' items are retried every sync: that is how a fixed
+  // login (Link update mode) flips back to 'good' without manual cleanup.
+  const items = d.prepare(`SELECT id, access_token, cursor FROM items WHERE status <> 'manual'`).all() as {
     id: string;
     access_token: string;
     cursor: string | null;
@@ -49,11 +52,13 @@ export async function syncAllItems() {
       d.prepare(`UPDATE items SET cursor=?, status='good', error=NULL, last_synced_at=datetime('now') WHERE id=?`)
         .run(cursor ?? null, item.id);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      d.prepare(`UPDATE items SET status='error', error=? WHERE id=?`).run(msg, item.id);
+      const { status, message } = classifyPlaidError(e);
+      d.prepare(`UPDATE items SET status=?, error=? WHERE id=?`).run(status, message, item.id);
     }
     results[item.id] = { added, modified, removed };
   }
+  // History folded in from a replaced link can be re-sent by the new one.
+  try { dedupeMergedTransactions(); } catch { /* best-effort; duplicates stay visible */ }
   // Refresh investment holdings too (graceful: items without investments
   // consent are skipped, not failed). Balances already came through the
   // transactions sync above; this adds the holdings composition.

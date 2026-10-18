@@ -449,13 +449,15 @@ export function listSubscriptions(entity?: string | null): SubsView {
 
   const counted = subs.filter((s) => s.state === "active" || s.state === "trial");
   const subsCounted = counted.filter((s) => !isObligation(s));
-  const obligations = counted.filter(isObligation);
+  // Money totals count only streams still charging; a lapsed one costs nothing.
+  const liveSubs = subsCounted.filter((s) => s.isActive);
+  const obligations = counted.filter((s) => isObligation(s) && s.isActive);
 
-  const monthlyTotal = round2(subsCounted.reduce((s, x) => s + x.monthly, 0));
-  const next30Total = round2(subsCounted.reduce((s, x) => s + chargesInWindow(x, 30) * x.lastAmount, 0));
+  const monthlyTotal = round2(liveSubs.reduce((s, x) => s + x.monthly, 0));
+  const next30Total = round2(liveSubs.reduce((s, x) => s + chargesInWindow(x, 30) * x.lastAmount, 0));
 
   const catMap = new Map<string, number>();
-  for (const s of subsCounted) {
+  for (const s of liveSubs) {
     const k = s.category ?? "Uncategorized";
     catMap.set(k, (catMap.get(k) ?? 0) + s.monthly);
   }
@@ -465,7 +467,7 @@ export function listSubscriptions(entity?: string | null): SubsView {
 
   // Subs temporarily on the personal card that are tagged to move to a work
   // card — surfaced as a recoverable total, across both types.
-  const toMove = counted.filter((s) => s.workMove === "pending");
+  const toMove = counted.filter((s) => s.workMove === "pending" && s.isActive);
 
   return {
     subs,
