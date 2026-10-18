@@ -38,6 +38,12 @@ export function isLapsed(lastDate: string, intervalDays: number, asOf = new Date
   return since > Math.max(1, intervalDays) * 2 + 7;
 }
 
+// Discretionary categories where a merchant is visited, not billed.
+const VISIT_CATS = new Set([
+  "Dining", "Food", "Groceries", "Travel", "Shopping", "Entertainment",
+  "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "TRAVEL", "ENTERTAINMENT",
+]);
+
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
@@ -105,6 +111,16 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
     if (mean <= 0 || cv > 0.6) continue;
 
     const last = g[g.length - 1];
+    // Regular visits to a restaurant, cafe, store or a run of Airbnb stays
+    // land on a cadence too, but each one is a different amount. A real charge
+    // in these categories (a delivery pass, a streaming plan filed as
+    // Entertainment) repeats an exact price, so require one amount to cover at
+    // least half the charges.
+    if (last.category && VISIT_CATS.has(last.category)) {
+      const freq = new Map<string, number>();
+      for (const a of amts) freq.set(a.toFixed(2), (freq.get(a.toFixed(2)) ?? 0) + 1);
+      if (Math.max(...freq.values()) * 2 < g.length) continue;
+    }
     out.push({
       merchant: last.merchant,
       category: last.category,
