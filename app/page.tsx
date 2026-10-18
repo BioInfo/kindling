@@ -761,6 +761,11 @@ function NetWorthPanel({ nw, onExpand }: { nw: NetWorthData; onExpand?: () => vo
   const change = nw.change;
   const up = change >= 0;
   const linked = nw.linkedExcluded ?? 0;
+  // Snapshots are not daily (days without a visit/sync have no point), so the
+  // window is the span between the first and last dates, not series.length.
+  const spanDays = series.length > 1
+    ? Math.round((Date.parse(series[series.length - 1].date) - Date.parse(series[0].date)) / 86_400_000)
+    : 0;
   const assets = nw.byType.filter((t) => t.side === "asset");
   const liabs = nw.byType.filter((t) => t.side === "liability");
   return (
@@ -774,7 +779,7 @@ function NetWorthPanel({ nw, onExpand }: { nw: NetWorthData; onExpand?: () => vo
           </button>
           {series.length > 1 && (
             <div className="mt-1 text-xs" style={{ color: up ? "var(--good)" : "var(--bad)" }}>
-              {up ? "▲" : "▼"} {money(Math.abs(change))} over {series.length} days
+              {up ? "▲" : "▼"} {money(Math.abs(change))} over {spanDays} days
             </div>
           )}
           {Math.abs(linked) >= 1 && (
