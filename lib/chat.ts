@@ -254,7 +254,7 @@ export async function proposeBatchCategories(model?: string): Promise<{ kind: "b
   const rows = d.prepare(
     `SELECT id, name, merchant, amount, category
      FROM transactions
-     WHERE category IS NULL OR category = 'Other'
+     WHERE category IS NULL OR category = '' OR upper(category) = 'OTHER'
      ORDER BY ABS(amount) DESC LIMIT 40`
   ).all() as unknown as { id: string; name: string; merchant: string | null; amount: number; category: string | null }[];
 
