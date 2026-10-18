@@ -202,12 +202,16 @@ export async function categorizeWithLlm(opts: { limit?: number; writeRules?: boo
     const byId = new Map(batch.map((b) => [b.id, b]));
     for (const r of parsed) {
       if (!r?.id || !r.category) continue;
+      // Only write ids we sent in this batch: an echoed or invented id would
+      // otherwise overwrite any row, manual picks included.
+      if (!byId.has(r.id)) continue;
       if (!CATEGORIES.includes(r.category as never)) continue;
-      setCat.run(r.category, r.confidence ?? null, r.id);
+      const conf = typeof r.confidence === "number" && r.confidence >= 0 && r.confidence <= 1 ? r.confidence : null;
+      setCat.run(r.category, conf, r.id);
       updated++;
 
       // Write back a rule on high confidence so it's deterministic next time.
-      if (writeRules && (r.confidence ?? 0) >= 0.9) {
+      if (writeRules && (conf ?? 0) >= 0.9) {
         const t = byId.get(r.id);
         const merchant = t?.merchant?.trim();
         if (merchant && merchant.length >= 3) {
