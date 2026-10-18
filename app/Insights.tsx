@@ -95,7 +95,7 @@ export function InsightsPanel({
           )}
           <button
             onClick={() => onDismiss([i.key])}
-            className="rounded px-1.5 leading-none"
+            className="rounded px-2.5 py-1.5 leading-none"
             style={{ color: "var(--muted)", border: "1px solid var(--border)", flexShrink: 0 }}
             title="Dismiss this"
             aria-label="Dismiss"

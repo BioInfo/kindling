@@ -846,8 +846,8 @@ function TxnTable({
         {rows.map((t) => (
           <div key={t.id} className="p-3" style={{ borderTop: "1px solid var(--border)" }}>
             <div className="flex items-center gap-2">
-              <button onClick={() => onIdentify(t)} title="AI-identify this merchant from the web"
-                className="shrink-0 text-xs" style={{ color: "var(--accent)" }}>✨</button>
+              <button onClick={() => onIdentify(t)} title="AI-identify this merchant from the web" aria-label="AI-identify merchant"
+                className="-my-2 -ml-2 shrink-0 p-2 text-xs" style={{ color: "var(--accent)" }}>✨</button>
               <button type="button" onClick={() => onMerchant(t.merchant ?? t.name)} className="min-w-0 flex-1 truncate text-left hover:underline"
                 title="Merchant details + edit">{t.merchant ?? t.name}</button>
               <span className="shrink-0 tabular-nums" style={{ color: t.amount > 0 ? "var(--text)" : "var(--good)" }}>{money(-t.amount, t.currency ?? "USD")}</span>
