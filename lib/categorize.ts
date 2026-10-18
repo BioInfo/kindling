@@ -20,7 +20,7 @@ export interface PropagationUndo {
     prevSource: string | null;
     prevPriority: number | null;
   };
-  affected: { id: string; prevCategory: string | null; prevSource: string | null }[];
+  affected: { id: string; prevCategory: string | null; prevSource: string | null; prevConfidence?: number | null }[];
 }
 
 // When a category is set by hand, remember the merchant so future syncs match it
@@ -69,17 +69,17 @@ export function rememberMerchantCategory(txnId: string, category: string): Propa
   const like = `%${pattern.toLowerCase()}%`;
   const haystack = field === "name" ? "lower(name)" : "lower(COALESCE(NULLIF(merchant,''), name))";
   const siblings = d.prepare(
-    `SELECT id, category, category_source FROM transactions
+    `SELECT id, category, category_source, confidence FROM transactions
      WHERE ${haystack} LIKE ? AND id != ? AND COALESCE(category_source,'') != 'manual'
        AND COALESCE(category,'') != ?`
-  ).all(like, txnId, category) as { id: string; category: string | null; category_source: string | null }[];
+  ).all(like, txnId, category) as { id: string; category: string | null; category_source: string | null; confidence: number | null }[];
 
   const setCat = d.prepare(
     `UPDATE transactions SET category=?, category_source='rule', confidence=1.0 WHERE id=?`
   );
   const affected = siblings.map((s) => {
     setCat.run(category, s.id);
-    return { id: s.id, prevCategory: s.category, prevSource: s.category_source };
+    return { id: s.id, prevCategory: s.category, prevSource: s.category_source, prevConfidence: s.confidence };
   });
 
   return { merchant: pattern, category, rule, affected };
@@ -96,8 +96,15 @@ export function undoRememberMerchant(undo: PropagationUndo): void {
       undo.rule.prevCategory, undo.rule.prevSource ?? "manual", undo.rule.prevPriority ?? 100, undo.rule.id,
     );
   }
-  const restore = d.prepare(`UPDATE transactions SET category=?, category_source=? WHERE id=?`);
-  for (const a of undo.affected) restore.run(a.prevCategory, a.prevSource, a.id);
+  // The backfill set confidence=1.0; restoring it matters because To-Review
+  // keys off confidence < 0.9. Tokens without prevConfidence leave it alone.
+  const restore = d.prepare(
+    `UPDATE transactions SET category=?, category_source=?, confidence=CASE WHEN ? THEN ? ELSE confidence END WHERE id=?`
+  );
+  for (const a of undo.affected) {
+    const has = a.prevConfidence !== undefined;
+    restore.run(a.prevCategory, a.prevSource, has ? 1 : 0, has ? a.prevConfidence ?? null : null, a.id);
+  }
 }
 
 // --- Rule layer (deterministic, user-editable, runs on every sync) ---
