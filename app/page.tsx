@@ -325,10 +325,13 @@ export default function Home() {
     const patch = (t: Txn) => (ids.has(t.id) ? { ...t, category, category_source: "rule" } : t);
     setTxns((prev) => prev.map(patch));
     setReviewRows((prev) => prev.map(patch));
+    setOvTxns((prev) => prev.map(patch));
   };
-  const editTxn = (rows: Txn[], setRows: (t: Txn[]) => void) =>
+  // Functional update: suggestTxn calls this after an await, when `rows` is a
+  // stale snapshot (rows marked reviewed meanwhile would come back).
+  const editTxn = (_rows: Txn[], setRows: React.Dispatch<React.SetStateAction<Txn[]>>) =>
     async (id: string, field: "category" | "entity", val: string) => {
-      setRows(rows.map((t) => (t.id === id ? { ...t, [field]: val } : t)));
+      setRows((prev) => prev.map((t) => (t.id === id ? { ...t, [field]: val } : t)));
       const res = await patchTxn(id, { [field]: val });
       const prop = res?.propagation as PropagationUndo | null | undefined;
       if (field === "category" && prop) {
@@ -346,8 +349,8 @@ export default function Home() {
     if (tab === "transactions") { await loadReview(); await loadFeed(); }
   };
   const markReviewed = async (id: string) => {
-    setReviewRows(reviewRows.filter((t) => t.id !== id));
-    setReviewCount(Math.max(0, reviewCount - 1));
+    setReviewRows((prev) => prev.filter((t) => t.id !== id));
+    setReviewCount((n) => Math.max(0, n - 1));
     await patchTxn(id, { reviewed: true });
   };
   // One-tap AI suggestion for a To-Review row → applies via the normal edit path
