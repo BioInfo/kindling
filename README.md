@@ -121,9 +121,29 @@ keep the app private-network-only. Ask before anything irreversible.
 1. Get Plaid Production keys (free tier: 10 Items), store the secret in `pass`
    as `api-keys/plaid-secret-production`.
 2. `PLAID_ENV=production ./run.sh dev` and connect real accounts.
-3. For always-on serving: `start-prod.sh` builds once and serves with
-   `next start` ([`deploy/`](deploy/) has LaunchAgent templates), behind
-   `tailscale serve` or your reverse proxy of choice. Never expose it publicly.
+3. For always-on serving: `start-prod.sh` builds once (and rebuilds when any
+   `.ts`/`.tsx` under `app/` or `lib/` is newer than `.next/BUILD_ID`) and serves
+   `next start` on `127.0.0.1:3408`. [`deploy/`](deploy/) has LaunchAgent
+   templates (`SET_ME` placeholders; installed copies live in
+   `~/Library/LaunchAgents`, outside git). Put it behind `tailscale serve` or
+   your reverse proxy of choice. Never expose it publicly.
+
+## Operating it
+
+- **Source edits do not show in prod until rebuilt.** Stop the service, `rm -rf .next`,
+  start it again; `start-prod.sh` rebuilds with secrets from `pass`. Do not run
+  `next dev` or `npm run build` alongside a live prod server (shared `.next/`).
+- **Commit gate:** `npm run typecheck` exits 0.
+- **Weekly digest:** `scripts/weekly-summary.py` (dry run by default, `--send` mails via
+  Resend; key from `pass api-keys/resend`) driven by a LaunchAgent template in `deploy/`.
+  Resend sits behind Cloudflare, so the script sends a named User-Agent.
+- **Quotes:** manual holdings are priced from Yahoo Finance (no key) on Sync and Refresh;
+  `scripts/refresh-quotes.mjs` plus the `deploy/` template adds a nightly refresh.
+- **Backup:** `finance.db` is WAL-mode SQLite; back it up with `sqlite3 data/finance.db ".backup <dest>"`,
+  never a plain file copy.
+- **LLM and search features** need the configured gateway (`LITELLM_BASE_URL`) and
+  `LITESEARCH_URL` reachable; a cold local model can take 30-60s on first call.
+- Numeric money inputs strip `$` and `,` (`parseMoney`) on client and server; do the same for new fields.
 
 Architecture, security model, and design principles: [`PLAN.md`](PLAN.md).
 

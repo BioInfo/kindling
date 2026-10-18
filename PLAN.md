@@ -48,10 +48,9 @@ tend daily so the ember catches.
 
 ```
 Plaid (banks)
-  │  webhook: SYNC_UPDATES_AVAILABLE (optional)
-  ▼
-[public HTTPS pinhole → /api/webhook ONLY, Plaid-JWT-verified]
-  │  (carries a signal, not data: "item X has updates")
+  │  (planned, not built) webhook: SYNC_UPDATES_AVAILABLE
+  │  → public HTTPS pinhole → /api/webhook ONLY, Plaid-JWT-verified;
+  │    carries a signal, not data: "item X has updates"
   ▼
 Next.js app on your box ── private network only ──► You (dashboard/chat)
   │
@@ -62,6 +61,8 @@ Next.js app on your box ── private network only ──► You (dashboard/cha
 ```
 
 ### Security model (financial data — strict)
+
+Webhook and backstop-sync items below are the design for when they are built; today sync is the in-app **Sync** button.
 
 - Default everything private-network-only (Tailscale serve or equivalent).
   Never expose the dashboard publicly.
@@ -75,7 +76,7 @@ Next.js app on your box ── private network only ──► You (dashboard/cha
 - Chat text-to-SQL: read-only DB connection, single-SELECT allowlist, table
   allowlist, injected LIMIT, reject any non-SELECT. The model proposes, a
   validator gates.
-- Backstop nightly sync (cron/LaunchAgent) for missed webhooks, plus a staleness
+- Planned: backstop nightly sync (cron/LaunchAgent) for missed webhooks, plus a staleness
   heartbeat so a broken Item never goes silent.
 - Secrets live in `pass` or env vars — never in tracked files. `finance.db` is
   gitignored; real financial data never goes to any git remote.
@@ -102,7 +103,7 @@ Next.js app on your box ── private network only ──► You (dashboard/cha
   table; price-hike/unused/trial flags; what-if-cancel; AI cut-plan + cancel
   guides; bills vs subscriptions split; work-card migration tags.
 - Investments: holdings, allocation charts, equity-grant vesting (RSU/option/ESPP)
-  with live quotes (Stooq).
+  with live quotes (Yahoo Finance).
 - Budgets, goals, tax planning view, cash-flow forecast, Sankey money-flow,
   weekly/monthly plain-English summaries, chat-with-your-money (text-to-SQL),
   proactive insights feed, optional weekly email digest (Resend).
