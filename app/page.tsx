@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePlaidLink } from "react-plaid-link";
 import { panel, money, prettyCategory, CategorySelect, EntityToggle, Sparkline, sortFilter, useTableView, TableToolbar, Pager, ThemeToggle, type Txn } from "./ui";
 import { CATEGORIES } from "@/lib/taxonomy";
@@ -180,7 +180,11 @@ export default function Home() {
   }, [entity]);
 
   // The full Transactions-tab feed: server-side search / sort / filter + pagination.
+  // Filters change faster than the route answers, so only the newest request may
+  // write state; an older response landing late would show the wrong page.
+  const feedSeq = useRef(0);
   const loadFeed = useCallback(async () => {
+    const seq = ++feedSeq.current;
     const p = new URLSearchParams();
     p.set("limit", String(PAGE_SIZE)); p.set("offset", String(page * PAGE_SIZE));
     if (entity !== "all") p.set("entity", entity);
@@ -190,6 +194,7 @@ export default function Home() {
     if (feedSort !== "date") p.set("sort", feedSort);
     if (feedDir !== "desc") p.set("dir", feedDir);
     const r = await fetch(`/api/transactions?${p.toString()}`).then((x) => x.json());
+    if (seq !== feedSeq.current) return;
     setTxns(r.txns ?? []); setTotal(r.total ?? 0);
     setAccounts(r.accounts ?? []); setNetWorth(r.netWorth ?? 0); setReviewCount(r.reviewCount ?? 0);
   }, [entity, page, PAGE_SIZE, feedQDeb, feedCat, feedAcct, feedSort, feedDir]);
