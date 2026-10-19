@@ -107,6 +107,7 @@ export function AddManualAccountModal({ onClose, onCreated }: { onClose: () => v
 function ManualRow({ a, reload }: { a: ManualAccount; reload: () => void }) {
   const [name, setName] = useState(a.name);
   const [balance, setBalance] = useState(String(a.balance));
+  const [correction, setCorrection] = useState(false);
   const hasHoldings = a.holdingCount > 0;
 
   const patch = async (body: Record<string, unknown>) => {
@@ -120,7 +121,7 @@ function ManualRow({ a, reload }: { a: ManualAccount; reload: () => void }) {
   const commitBalance = () => {
     if (hasHoldings) return;
     const n = parseMoney(balance);
-    if (Number.isFinite(n) && n >= 0 && n !== a.balance) patch({ balance: n });
+    if (Number.isFinite(n) && n >= 0 && n !== a.balance) { patch({ balance: n, correction }); setCorrection(false); }
   };
   const del = async () => {
     if (!confirm(`Delete "${a.name}"? This removes its holdings too.`)) return;
@@ -150,6 +151,12 @@ function ManualRow({ a, reload }: { a: ManualAccount; reload: () => void }) {
           ? `${a.holdingCount} holding${a.holdingCount === 1 ? "" : "s"} · balance tracks holdings (edit on the Investments tab)`
           : "value-only · edit the balance here, or add holdings on the Investments tab"}
       </div>
+      {!hasHoldings && (
+        <label className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+          <input type="checkbox" checked={correction} onChange={(e) => setCorrection(e.target.checked)} />
+          This corrects the starting figure (not growth or loss)
+        </label>
+      )}
     </div>
   );
 }

@@ -43,11 +43,12 @@ export async function PATCH(req: NextRequest) {
   if (!b.id || typeof b.id !== "string") {
     return NextResponse.json({ error: "id required" }, { status: 400 });
   }
-  const f: { name?: string; institution?: string | null; subtype?: string | null; balance?: number } = {};
+  const f: { name?: string; institution?: string | null; subtype?: string | null; balance?: number; correction?: boolean } = {};
   if (typeof b.name === "string") f.name = b.name;
   if (b.institution !== undefined) f.institution = b.institution;
   if (typeof b.subtype === "string") f.subtype = b.subtype;
   if (b.balance !== undefined && Number.isFinite(money(b.balance))) f.balance = money(b.balance);
+  if (b.correction === true) f.correction = true;
   const ok = updateManualAccount(b.id, f);
   if (!ok) return NextResponse.json({ error: "not a manual account" }, { status: 404 });
   return NextResponse.json({ ok: true });

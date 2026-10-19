@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { plaid } from "./plaid";
 import { decrypt } from "./crypto";
+import { setAccountVisibility } from "./networth";
 
 // Re-linking an institution through fresh Link (instead of update mode) creates a
 // SECOND Plaid item with new account_ids and new transaction_ids for the same
@@ -155,6 +156,14 @@ export async function mergeItemInto(fromItem: string, intoItem: string, opts: { 
       // new visibility); the new item's own event goes.
       const ev = d.prepare(`SELECT 1 FROM connection_events WHERE item_id = ?`).get(fromItem);
       if (ev) {
+        // Accounts picked for the first time in this re-link are new visibility of
+        // their own, dated at the re-link; twins of old accounts add nothing.
+        const into = d.prepare(`SELECT date FROM connection_events WHERE item_id = ?`).get(intoItem) as { date: string } | undefined;
+        const twins = new Set([...pairs.values()].map((n) => n.id));
+        for (const n of newA) {
+          const net = twins.has(n.id) ? 0 : (n.type === "credit" || n.type === "loan" ? -1 : 1) * (n.current_balance ?? 0);
+          setAccountVisibility(n.id, intoItem, into?.date ?? new Date().toISOString().slice(0, 10), net, from.institution_name);
+        }
         d.prepare(`DELETE FROM connection_events WHERE item_id = ?`).run(intoItem);
         d.prepare(`UPDATE connection_events SET item_id = ? WHERE item_id = ?`).run(intoItem, fromItem);
       }
