@@ -513,7 +513,7 @@ export function Subscriptions({
                 <div key={s.id} className="flex flex-wrap items-center gap-2 p-3" style={{ borderTop: "1px solid var(--border)", opacity: inactive ? 0.65 : 1 }}>
                   <input type="checkbox" checked={picked.has(s.id)} onChange={() => toggle(s.id)} title="What if I cancel this?" className="shrink-0" style={{ accentColor: "var(--accent)" }} />
                   {s.icon ? <span className="shrink-0 text-sm leading-none">{s.icon}</span> : <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: dot }} />}
-                  <button onClick={() => onSub(s.id)} className="min-w-0 flex-1 text-left font-medium hover:underline"
+                  <button onClick={() => onSub(s.id)} className="min-w-40 flex-1 text-left font-medium hover:underline"
                     style={{ textDecoration: inactive ? "line-through" : undefined }} title="Subscription detail">{s.merchant}</button>
                   {badge(s.cadence)}
                   {s.category ? <span className="text-xs" style={{ color: "var(--muted)" }}>{prettyCategory(s.category)}</span> : null}
