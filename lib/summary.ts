@@ -1,6 +1,6 @@
 import { db } from "./db";
 import { chat } from "./llm";
-import { computeNetWorth, adjustedTrend } from "./networth";
+import { computeNetWorth, adjustedTrend, visibilityEvents } from "./networth";
 import { detectRecurring } from "./recurring";
 import { detectAnomalies } from "./anomalies";
 import { listBudgets } from "./budgets";
@@ -363,11 +363,9 @@ export function gatherMonthlyStats(): MonthlyStats {
     current: round2(nwNow), prior: null, delta: null, priorDate: null, linkedExcluded: 0,
   };
   if (reportEnd && priorEnd) {
-    const events = db().prepare(
-      `SELECT date, net_delta FROM connection_events
-       UNION ALL
-       SELECT date(created_at) AS date, added_signed AS net_delta FROM manual_assets`
-    ).all() as unknown as { date: string; net_delta: number }[];
+    // Same event set adjustedTrend lifts out (links, first sightings, removals,
+    // corrections, manual assets, equity grants), so the two never disagree.
+    const events = visibilityEvents();
     // Visibility steps that landed between the two month-ends shouldn't read as
     // organic growth — pull them out of the delta, surface separately.
     const linked = events.reduce((a, e) => (e.date > priorEnd.date && e.date <= reportEnd.date ? a + e.net_delta : a), 0);
