@@ -77,7 +77,7 @@ function globalMonthlySpend(): Map<string, Map<string, number>> {
 // transactions; the current (open) month is never snapshotted. Cheap — a few
 // categories × a few months — so it's safe to run on every budgets read.
 export function reconcileRolloverLedger(): void {
-  const thisMonth = (db().prepare(`SELECT strftime('%Y-%m','now') AS m`).get() as { m: string }).m;
+  const thisMonth = (db().prepare(`SELECT strftime('%Y-%m','now','localtime') AS m`).get() as { m: string }).m;
   const lastClosed = numToYm(ymToNum(thisMonth) - 1);
   const rb = db().prepare(
     `SELECT category, amount, strftime('%Y-%m', created_at) AS start FROM budgets WHERE rollover = 1`
@@ -118,9 +118,9 @@ function currentCarryByCategory(thisMonth: string): Map<string, number> {
 
 function monthMeta(): MonthMeta {
   const r = db().prepare(
-    `SELECT strftime('%Y-%m','now') AS month,
-            CAST(strftime('%d','now') AS INTEGER) AS dayOfMonth,
-            CAST(strftime('%d', date('now','start of month','+1 month','-1 day')) AS INTEGER) AS daysInMonth`
+    `SELECT strftime('%Y-%m','now','localtime') AS month,
+            CAST(strftime('%d','now','localtime') AS INTEGER) AS dayOfMonth,
+            CAST(strftime('%d', date('now','localtime','start of month','+1 month','-1 day')) AS INTEGER) AS daysInMonth`
   ).get() as { month: string; dayOfMonth: number; daysInMonth: number };
   return { ...r, progress: r.daysInMonth ? r.dayOfMonth / r.daysInMonth : 1 };
 }
@@ -134,7 +134,7 @@ function monthSpendByCategory(entity?: string | null): Map<string, number> {
     `SELECT category AS c, SUM(amount) AS spent
      FROM transactions
      WHERE amount > 0 AND category IS NOT NULL
-       AND date >= date('now','start of month')
+       AND date >= date('now','localtime','start of month')
        ${entityClause}
      GROUP BY category`
   ).all(...(args as never[])) as unknown as { c: string; spent: number }[];
