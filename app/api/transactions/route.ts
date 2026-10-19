@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { REVIEW_WHERE } from "@/lib/categorize";
 
 export const dynamic = "force-dynamic";
 
@@ -62,10 +63,7 @@ export async function GET(req: NextRequest) {
   ).get() as unknown as { net: number };
 
   const reviewCount = d.prepare(
-    `SELECT COUNT(*) AS n FROM transactions
-     WHERE reviewed = 0 AND (
-       category IS NULL OR category = 'Other'
-       OR (category_source IN ('plaid','llm') AND (COALESCE(confidence,0) < 0.9 OR ABS(amount) >= 1000)))`
+    `SELECT COUNT(*) AS n FROM transactions WHERE ${REVIEW_WHERE}`
   ).get() as unknown as { n: number };
 
   return NextResponse.json({

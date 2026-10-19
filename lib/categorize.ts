@@ -107,6 +107,16 @@ export function undoRememberMerchant(undo: PropagationUndo): void {
   }
 }
 
+// The To-Review predicate, shared by the inbox and the badge so the two counts
+// agree. "Other" is matched case-insensitively: raw Plaid OTHER rows are the
+// same catch-all. Columns are unqualified, so alias-free FROM transactions only.
+export const REVIEW_CATCHALL = `(category IS NULL OR upper(category) = 'OTHER')`;
+export const REVIEW_WHERE = `reviewed = 0 AND (
+  ${REVIEW_CATCHALL}
+  -- "large" only matters for AI/Plaid guesses; a rule/manual recurring bill
+  -- (mortgage, payroll) is already blessed and shouldn't loiter in review.
+  OR (category_source IN ('plaid','llm') AND (COALESCE(confidence,0) < 0.9 OR ABS(amount) >= 1000)))`;
+
 // --- Rule layer (deterministic, user-editable, runs on every sync) ---
 export interface RuleRow {
   match_type: string;

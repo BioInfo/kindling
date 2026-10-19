@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePlaidLink } from "react-plaid-link";
-import { panel, money, prettyCategory, CategorySelect, EntityToggle, Sparkline, sortFilter, useTableView, TableToolbar, Pager, ThemeToggle, type Txn } from "./ui";
+import { panel, money, prettyCategory, CategorySelect, EntityToggle, Sparkline, useTableView, TableToolbar, Pager, ThemeToggle, type Txn } from "./ui";
 import { CATEGORIES } from "@/lib/taxonomy";
 import type { PropagationUndo } from "@/lib/categorize";
 import { Sankey, type SankeyData } from "./Sankey";
@@ -225,10 +225,18 @@ export default function Home() {
     initialSort: "date", pageSize: 10,
   });
 
+  // To-Review is paginated server-side: the page holds only the visible rows,
+  // and the segment counts come back with them.
+  const [revTotals, setRevTotals] = useState({ total: 0, all: 0, catchall: 0 });
   const loadReview = useCallback(async () => {
-    const r = await fetch("/api/review").then((x) => x.json());
+    const qs = new URLSearchParams({
+      limit: String(revPageSize), offset: String(revPage * revPageSize),
+      q: revQ.trim(), sort: revSort, dir: revDir, filter: reviewFilter,
+    });
+    const r = await fetch(`/api/review?${qs}`).then((x) => x.json());
     setReviewRows(r.review ?? []);
-  }, []);
+    setRevTotals({ total: r.total ?? 0, all: r.all ?? 0, catchall: r.catchall ?? 0 });
+  }, [revPage, revPageSize, revQ, revSort, revDir, reviewFilter]);
   const loadRules = useCallback(async () => {
     const r = await fetch("/api/rules").then((x) => x.json());
     setRules(r.rules ?? []);
@@ -290,15 +298,16 @@ export default function Home() {
   useEffect(() => { loadForecast(); }, [loadForecast]);
   // The Transactions feed loads when that tab is open and on any page/filter change.
   useEffect(() => { if (tab === "transactions") loadFeed(); }, [tab, loadFeed]);
+  useEffect(() => { if (tab === "transactions") loadReview(); }, [tab, loadReview]);
   useEffect(() => {
-    if (tab === "transactions") { loadReview(); loadRules(); loadRecurring(); }
+    if (tab === "transactions") { loadRules(); loadRecurring(); }
     if (tab === "budgets") loadBudgets();
     if (tab === "goals") loadGoals();
     if (tab === "investments") { loadInvestments(); loadEquity(); }
     if (tab === "networth") loadAssets();
     if (tab === "tax") loadTax();
     if (tab === "subscriptions") loadSubscriptions();
-  }, [tab, loadReview, loadRules, loadRecurring, loadBudgets, loadGoals, loadInvestments, loadEquity, loadAssets, loadTax, loadSubscriptions]);
+  }, [tab, loadRules, loadRecurring, loadBudgets, loadGoals, loadInvestments, loadEquity, loadAssets, loadTax, loadSubscriptions]);
 
   const exportCsv = () => {
     const a = document.createElement("a");
@@ -354,6 +363,7 @@ export default function Home() {
     setReviewRows((prev) => prev.filter((t) => t.id !== id));
     setReviewCount((n) => Math.max(0, n - 1));
     await patchTxn(id, { reviewed: true });
+    loadReview(); // refill the page from the server
   };
   // One-tap AI suggestion for a To-Review row → applies via the normal edit path
   // (so it remembers the merchant + backfills siblings, with Undo).
@@ -600,14 +610,8 @@ export default function Home() {
           )}
 
           {txnView === "review" && (() => {
-            const catchall = reviewRows.filter((t) => !t.category || t.category === "Other");
-            const base = reviewFilter === "catchall" ? catchall : reviewRows;
-            const shown = sortFilter(
-              base, revQ,
-              (t) => `${t.merchant ?? ""} ${t.name ?? ""} ${t.category ?? ""}`,
-              (t) => revSort === "date" ? t.date : revSort === "name" ? (t.merchant ?? t.name ?? "") : Math.abs(t.amount),
-              revDir,
-            );
+            // Search, segment, sort and paging all run server-side (/api/review).
+            const shown = reviewRows;
             const fld = { background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)" };
             const seg = (key: "all" | "catchall", label: string, n: number) => (
               <button onClick={() => setReviewFilter(key)} className="rounded-md px-2.5 py-1 text-xs font-medium"
@@ -622,8 +626,8 @@ export default function Home() {
                     Uncategorized, &ldquo;Other&rdquo;, and unsure AI guesses (plus big AI-guessed charges). Tap ✨ to let AI pick, or set it yourself — similar charges follow.
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    {seg("all", "All", reviewRows.length)}
-                    {seg("catchall", "Uncategorized & Other", catchall.length)}
+                    {seg("all", "All", revTotals.all)}
+                    {seg("catchall", "Uncategorized & Other", revTotals.catchall)}
                     <input value={revQ} onChange={(e) => setRevQ(e.target.value)} placeholder="Search…"
                       className="ml-auto min-w-0 flex-1 rounded px-2 py-1 text-xs sm:max-w-44 sm:flex-none" style={fld} />
                     <select value={revSort} onChange={(e) => setRevSort(e.target.value as "amount" | "date" | "name")} title="Sort by"
@@ -635,9 +639,9 @@ export default function Home() {
                   </div>
                 </div>
                 {shown.length === 0 && <div className="p-6 text-center" style={{ color: "var(--muted)" }}>
-                  {reviewRows.length === 0 ? "Nothing to review. 🎉" : "None in this filter. 🎉"}
+                  {revTotals.all === 0 && !revQ ? "Nothing to review. 🎉" : "None in this filter. 🎉"}
                 </div>}
-                {shown.slice(revPage * revPageSize, revPage * revPageSize + revPageSize).map((t) => (
+                {shown.map((t) => (
                   <div key={t.id} className="flex flex-wrap items-center gap-2 p-3" style={{ borderTop: "1px solid var(--border)" }}>
                     <button type="button" onClick={() => setTxnDetailId(t.id)} className="text-xs w-20 text-left hover:underline" style={{ color: "var(--muted)" }} title="Transaction details">{t.date}</button>
                     <button type="button" onClick={() => setMerchantName(t.merchant ?? t.name)} className="flex-1 min-w-40 text-left hover:underline" title="Merchant details + edit">{t.merchant ?? t.name}</button>
@@ -652,7 +656,7 @@ export default function Home() {
                     <button onClick={() => markReviewed(t.id)} className="rounded px-2 py-1 text-xs" style={{ background: "var(--accent-deep)", color: "white" }}>✓ Reviewed</button>
                   </div>
                 ))}
-                <Pager page={revPage} pageSize={revPageSize} total={shown.length} onPage={setRevPage} onPageSize={setRevPageSize} />
+                <Pager page={revPage} pageSize={revPageSize} total={revTotals.total} onPage={setRevPage} onPageSize={setRevPageSize} />
               </section>
             );
           })()}
