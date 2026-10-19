@@ -37,6 +37,10 @@ export function rememberMerchantCategory(txnId: string, category: string): Propa
     | undefined;
   if (!row) return null;
 
+  // One Amazon row's pick says nothing about the next Amazon order: no rule,
+  // no backfill. The caller still sets the clicked row.
+  if (MULTI_CATEGORY_MERCHANT.test(`${row.merchant ?? ""} ${row.name ?? ""}`)) return null;
+
   const merchant = (row.merchant ?? "").trim();
   const useMerchant = merchant.length >= 3;
   const field = useMerchant ? "merchant" : "name";
@@ -115,7 +119,14 @@ export const REVIEW_WHERE = `reviewed = 0 AND (
   ${REVIEW_CATCHALL}
   -- "large" only matters for AI/Plaid guesses; a rule/manual recurring bill
   -- (mortgage, payroll) is already blessed and shouldn't loiter in review.
-  OR (category_source IN ('plaid','llm') AND (COALESCE(confidence,0) < 0.9 OR ABS(amount) >= 1000)))`;
+  OR (category_source IN ('plaid','llm') AND (COALESCE(confidence,0) < 0.9 OR ABS(amount) >= 1000))
+  -- a code rule that could only guess (an Amazon charge with no receipt)
+  OR (category_source = 'rule' AND COALESCE(confidence,1) < 0.7))`;
+
+// Merchants that sell many kinds of things. Their category is decided per
+// transaction (lib/recategorize.ts), never by a merchant-wide rule.
+export const MULTI_CATEGORY_MERCHANT =
+  /\b(amazon|amzn|walmart|target|costco|apple\.com|apple\b|google|uber|wawa|sheetz|venmo|zelle|paypal|cvs|walgreens|best buy|home depot|lowe'?s|etsy|ebay)\b/i;
 
 // --- Rule layer (deterministic, user-editable, runs on every sync) ---
 export interface RuleRow {
@@ -235,7 +246,7 @@ export async function categorizeWithLlm(opts: { limit?: number; writeRules?: boo
       if (writeRules && (conf ?? 0) >= 0.9) {
         const t = byId.get(r.id);
         const merchant = t?.merchant?.trim();
-        if (merchant && merchant.length >= 3) {
+        if (merchant && merchant.length >= 4 && !MULTI_CATEGORY_MERCHANT.test(`${merchant} ${t?.name ?? ""}`)) {
           const exists = d.prepare(
             `SELECT 1 FROM rules WHERE lower(pattern)=lower(?) AND field='merchant'`
           ).get(merchant);

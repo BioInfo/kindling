@@ -16,6 +16,10 @@ type Detail = {
   location: string | null; storeNumber: string | null; website: string | null;
   detailedCategory: string | null; category: string | null; categorySource: string | null;
   authorizedDate: string | null; postedDate: string; pending: boolean;
+  receipt?: {
+    kind: string; orderId: string | null; date: string; total: number | null; split: boolean;
+    labels: string[]; items: { name: string; qty: number | null; price: number | null }[];
+  } | null;
 };
 
 type ScamResult = {
@@ -240,6 +244,30 @@ export function TxnDetailModal({
                 </span>
               )}
             </div>
+
+            {/* What was bought: the order receipt matched to this charge */}
+            {d.receipt && (d.receipt.items.length > 0 || d.receipt.labels.length > 0) && (
+              <div className="mt-4">
+                <div className="mb-1 text-xs font-medium" style={{ color: "var(--muted)" }}>
+                  What was bought
+                  <span className="font-normal"> · order {d.receipt.orderId ?? "?"}, {d.receipt.date}
+                    {d.receipt.split ? " · this charge is part of the order" : ""}</span>
+                </div>
+                <div className="rounded-lg p-2 text-xs" style={{ background: "var(--bg)", border: "1px solid var(--border)" }}>
+                  {d.receipt.labels.length > 0 && (
+                    <div className="mb-1" style={{ color: "var(--muted)" }}>{d.receipt.labels.join(" · ")}</div>
+                  )}
+                  {d.receipt.items.map((it, i) => (
+                    <div key={i} className="flex justify-between gap-3">
+                      <span className="min-w-0 truncate" style={{ color: "var(--text)" }}>
+                        {it.qty && it.qty > 1 ? `${it.qty} × ` : ""}{it.name}
+                      </span>
+                      {it.price !== null && <span className="shrink-0 tabular-nums" style={{ color: "var(--muted)" }}>${it.price.toFixed(2)}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* AI / web context */}
             <div className="mt-4">

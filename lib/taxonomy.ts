@@ -8,11 +8,17 @@ export const CATEGORIES = [
   "CreditCardPayment",
   "Rent",
   "Mortgage",
+  "Loan Payments", // car, student and other loans; still spending, never a transfer
   "Home",        // HOA dues, home services and upkeep — not the mortgage itself
   "Utilities",
   "Groceries",
   "Dining",
-  "Shopping",
+  "Shopping",    // general merchandise that fits nothing below
+  "Electronics", // devices, computer and phone accessories, cables, networking
+  "Household",   // cleaning, paper goods, kitchenware, tools, garden, small appliances
+  "Clothing",    // apparel, shoes, accessories
+  "Pets",        // pet food and supplies, vet visits
+  "Personal Care", // hair, beauty, nails, spa, dry cleaning
   "Travel",
   "Transportation",
   "Subscriptions",
@@ -80,8 +86,19 @@ const PFC_DETAILED: Record<string, Category> = {
   GENERAL_SERVICES_AUTOMOTIVE: "Transportation",
   GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT: "Taxes",
   GOVERNMENT_AND_NON_PROFIT_DONATIONS: "Charity",
-  HOME_IMPROVEMENT_FURNITURE: "Shopping",
-  HOME_IMPROVEMENT_HARDWARE: "Shopping",
+  HOME_IMPROVEMENT_FURNITURE: "Household",
+  HOME_IMPROVEMENT_HARDWARE: "Household",
+  HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE: "Home",
+  HOME_IMPROVEMENT_SECURITY: "Home",
+  GENERAL_MERCHANDISE_ELECTRONICS: "Electronics",
+  GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES: "Clothing",
+  GENERAL_MERCHANDISE_PET_SUPPLIES: "Pets",
+  MEDICAL_VETERINARY_SERVICES: "Pets",
+  PERSONAL_CARE_HAIR_AND_BEAUTY: "Personal Care",
+  PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING: "Personal Care",
+  LOAN_PAYMENTS_CAR_PAYMENT: "Loan Payments",
+  LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT: "Loan Payments",
+  LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT: "Loan Payments",
 };
 
 // Primaries with no safe 1:1 bucket: without a decisive detailed they land on
