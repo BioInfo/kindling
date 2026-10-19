@@ -59,8 +59,8 @@ await check("merge", () => {
     const rows = personal.filter((s) => re.test(s.merchant));
     ok(`merged: ${name} is one row`, rows.length === 1, rows.map((r) => r.merchant).join(" + "));
   }
-  const uber = v.subs.filter((s) => /^uber$/i.test(s.merchant));
-  ok("not merged across entities: Uber personal and business stay two rows", uber.length === 2, uber.map((u) => u.entity).join(","));
+  const uber = db().prepare(`SELECT entity, merged_into FROM subscriptions WHERE merchant = 'Uber'`).all() as { entity: string; merged_into: string | null }[];
+  ok("not merged across entities: Uber personal and business stay two rows", uber.length === 2 && uber.every((u) => !u.merged_into), uber.map((u) => u.entity).join(","));
 });
 
 await check("types", () => {
@@ -76,10 +76,11 @@ await check("types", () => {
 });
 
 await check("transfers", () => {
-  const re = /invest529|529|fundrise|zelle|ext trnsfr|venmo|greenlight|prosper/i;
-  const rows = v.subs.filter((s) => re.test(s.merchant));
+  // The house cleaner (paid by Zelle) and the JPMorgan payment are bills by ruling.
+  const re = /invest529|529|fundrise|zelle|venmo|greenlight|prosper/i;
+  const rows = v.subs.filter((s) => re.test(s.merchant) && !/espericueta/i.test(s.merchant));
   const wrong = rows.filter((s) => !["transfers", "ended"].includes(grp(s)));
-  ok("529, Fundrise, Zelle, Chase ext transfer, Venmo, Greenlight, Prosper are transfers", rows.length >= 7 && wrong.length === 0,
+  ok("529, Fundrise, Zelle, Venmo, Greenlight, Prosper are transfers", rows.length >= 6 && wrong.length === 0,
     wrong.map((s) => `${s.merchant}→${grp(s)}`).join(", ") || `${rows.length} rows`);
   const heroSum = Math.round(v.subs.filter((s) => grp(s) === "subs" && live(s)).reduce((a, s) => a + s.monthly, 0) * 100) / 100;
   ok("hero = sum of live subscription rows only", Math.abs(heroSum - v.monthlyTotal) < 0.02, `${heroSum} vs ${v.monthlyTotal}`);
@@ -106,10 +107,45 @@ await check("ended", () => {
   ok("ended rows add nothing to the hero", !ended.some((s) => grp(s) === "subs"));
 });
 
+await check("live fixes 2026-10-18", async () => {
+  type R = Row & { displayName?: string; oneOffs?: { count: number; total: number } | null; streams?: { live: boolean }[] };
+  const subs = v.subs as R[];
+  const find = (re: RegExp) => subs.find((s) => re.test(s.merchant) || re.test(s.displayName ?? ""));
+  const rec = await import(`${LIB}/recurring.ts`);
+  if (rec.isCardPayoff) {
+    const pay = ["CHASE CREDIT CRD AUTOPAY", "AMEX EPAYMENT ACH PMT", "CITI AUTOPAY PAYMENT", "CAPITAL ONE CRCARDPMT", "BARCLAYCARD US CREDITCARD"];
+    ok("card payoffs are recognised by descriptor", pay.every((d) => rec.isCardPayoff(d)), pay.filter((d) => !rec.isCardPayoff(d)).join(", "));
+    ok("an insurance autopay filed as a card payment is not a payoff", !rec.isCardPayoff("USAA P&C AUTOPAY"));
+  } else ok("isCardPayoff exists", false);
+  const usaa = find(/usaa p.?c/i);
+  ok("USAA P&C autopay is a live bill", usaa?.group === "bills" && (usaa?.monthly ?? 0) > 200, `${usaa?.group} ${usaa?.monthly}`);
+  ok("card payoffs stay off the surface", !subs.some((s) => /credit crd autopay|amex epayment/i.test(s.merchant)));
+  const exe = find(/exe\.?dev/i);
+  ok("a handed-off descriptor adds nothing (exe.dev = one $20 plan)", !!exe && exe.monthly < 25, String(exe?.monthly));
+  const pm = find(/pennymac/i);
+  ok("PennyMac merged rows count one mortgage", !!pm && Math.abs(pm.monthly - 6843.12) < 1, String(pm?.monthly));
+  const jpm = find(/jpmorgan chase ext/i);
+  ok("JPMorgan Chase Ext Trnsfr is a bill", jpm?.group === "bills", String(jpm?.group));
+  ok("no near-zero rows in any group", !subs.some((s) => s.monthly < 1), subs.filter((s) => s.monthly < 1).map((s) => s.merchant).join(", "));
+  const ro = find(/ro health/i);
+  ok("Ro Health monthly leaves out the $888 one-off", !!ro && ro.monthly < 600 && (ro.oneOffs?.total ?? 0) >= 888, `${ro?.monthly} ${JSON.stringify(ro?.oneOffs)}`);
+  const kin = find(/kindle/i);
+  ok("Kindle monthly leaves out book purchases", !!kin && kin.monthly < 30 && !!kin.oneOffs, `${kin?.monthly}`);
+  const apple = find(/^apple/i);
+  ok("Apple monthly leaves out app purchases and stopped plans", !!apple && apple.monthly < 40, String(apple?.monthly));
+  const uberSubs = subs.filter((s) => /uber/i.test(s.merchant) && s.group === "subs");
+  ok("Uber rides are not a subscription", uberSubs.length === 0, uberSubs.map((s) => `${s.entity} ${s.monthly}`).join(", "));
+  const maria = find(/espericueta|house cleaning/i);
+  ok("the house cleaner is a Home bill", maria?.group === "bills" && maria?.category === "Home" && maria?.displayName === "House cleaning (Maria)",
+    `${maria?.group} ${maria?.category} ${maria?.displayName}`);
+  ok("no Venmo descriptor merged into the cleaner", !(maria?.aliases ?? []).some((a) => /venmo/i.test(a.merchant)));
+});
+
+
 await check("user edits survive", async () => {
-  const uberBiz = v.subs.find((s) => /^uber$/i.test(s.merchant) && s.entity === "business")!;
+  const edited = v.subs.find((s) => /hetzner/i.test(s.merchant))!; // any live row will do
   const peacock = v.subs.find((s) => /peacock/i.test(s.merchant))!;
-  updateSubscription(uberBiz.id, { type: "bill", category: "Travel" });
+  updateSubscription(edited.id, { type: "bill", category: "Travel" });
   updateSubscription(peacock.id, { merchant: "Peacock Premium", type: "membership" });
   const xdev = db().prepare(`SELECT id FROM subscriptions WHERE merchant = 'X Developer Platform'`).get() as { id: string };
   const xroot = personal.find((s) => /^x$|x corp/i.test(s.merchant))!;
@@ -118,7 +154,7 @@ await check("user edits survive", async () => {
   ok("unmerge accepted", !!vercelAlias && !!subsMod.unmergeSubscription?.(vercelAlias.id));
   await tidy(); await reconcileSubscriptions({ plaid: false }); await tidy();
   const after = view().subs;
-  const u = after.find((s) => s.id === uberBiz.id);
+  const u = after.find((s) => s.id === edited.id);
   ok("user type + category survive reconcile and enrich", u?.type === "bill" && u?.category === "Travel", `${u?.type}/${u?.category}`);
   const p = after.find((s) => s.id === peacock.id);
   ok("user rename + type survive", p?.merchant === "Peacock Premium" && p?.type === "membership", `${p?.merchant}/${p?.type}`);
@@ -135,7 +171,8 @@ await check("idempotent", async () => {
   const r = await enrichMod.postSyncEnrich({ llm: false });
   ok("second enrich pass changes nothing", r.merged === 0 && r.typed === 0 && r.categorized === 0 && r.errors.length === 0, JSON.stringify(r));
   ok("enrich without LLM is fast", r.ms < 2000, `${r.ms}ms`);
-  ok("first pass did real work", !!first && first.merged > 0, JSON.stringify(first));
+  const merged = (db().prepare(`SELECT COUNT(*) AS n FROM subscriptions WHERE merged_into IS NOT NULL`).get() as { n: number }).n;
+  ok("descriptors are merged (this pass or an earlier one)", merged > 0, `${merged} aliases; first pass ${JSON.stringify(first)}`);
 });
 
 await check("llm batch", async () => {
@@ -161,6 +198,21 @@ await check("llm batch", async () => {
   ok("gateway failure: enrich resolves, reports the error", !threw && !!r2 && r2.errors.length > 0, JSON.stringify(r2?.errors));
   llmReply = null;
 });
+
+await check("type override moves a row cleanly", async () => {
+  const m = db().prepare(`SELECT id FROM subscriptions WHERE merchant LIKE '%ESPERICUETA%' AND merged_into IS NULL`).get() as { id: string } | undefined;
+  if (!m) { ok("cleaner row present", false); return; }
+  const at = () => (view().subs as Row[]).find((s) => s.id === m.id);
+  updateSubscription(m.id, { type: "transfer" });
+  await tidy();
+  const a = at();
+  ok("override to transfer lands in Transfers with a Transfer category", a?.group === "transfers" && !!a?.category?.startsWith("Transfer"), `${a?.group} ${a?.category}`);
+  updateSubscription(m.id, { type: "bill" });
+  await tidy();
+  const b = at();
+  ok("override back to bill lands in Bills with a non-transfer category", b?.group === "bills" && !b?.category?.startsWith("Transfer"), `${b?.group} ${b?.category}`);
+});
+
 
 const fv = view();
 const by = (g: string) => fv.subs.filter((s) => grp(s) === g);

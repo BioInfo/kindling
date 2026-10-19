@@ -33,6 +33,8 @@ export type Subscription = {
   overlapWith: { id: string; merchant: string; label: string }[];
   possibleDupOf: { id: string; merchant: string } | null;
   unlabelled: boolean;
+  streams: { id: string; label: string; mask: string | null; last: string; amount: number; count: number; live: boolean }[];
+  oneOffs: { count: number; total: number } | null;
 };
 export type SubsData = {
   subs: Subscription[];

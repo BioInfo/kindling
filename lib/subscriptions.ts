@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { plaid } from "./plaid";
 import { decrypt } from "./crypto";
-import { detectRecurring, isLapsed, norm } from "./recurring";
+import { detectRecurring, isLapsed, norm, isCardPayoff } from "./recurring";
 import { mapPfc, CATEGORIES } from "./taxonomy";
 import { chat, extractJson } from "./llm";
 import type { DatabaseSync } from "node:sqlite";
@@ -23,6 +23,7 @@ export type SubType = "subscription" | "bill" | "membership" | "transfer" | null
 export type SubGroup = "subs" | "bills" | "transfers" | "ended";
 
 export type PricePoint = { date: string; amount: number };
+export type SubStream = { id: string; label: string; mask: string | null; last: string; amount: number; count: number; live: boolean };
 export type SubEnrichment = {
   displayName: string;
   group: SubGroup;
@@ -36,6 +37,8 @@ export type SubEnrichment = {
   overlapWith: { id: string; merchant: string; label: string }[];
   possibleDupOf: { id: string; merchant: string } | null;
   unlabelled: boolean;              // no type yet (rules could not tell; the LLM pass may)
+  streams: SubStream[];             // one per card + descriptor family; a handed-off stream is not live
+  oneOffs: { count: number; total: number } | null; // singles left out of monthly (an $888 refill, a Kindle book)
 };
 
 export type Subscription = SubEnrichment & {
@@ -142,10 +145,13 @@ export function ensureSubsSchema(): DatabaseSync {
 type Brand = {
   re: RegExp; brand: string; label?: string; type: Exclude<SubType, null>; category: string;
   group: string; overlap?: string; noMerge?: boolean; annual?: boolean;
+  only?: RegExp; // count only charges whose descriptor matches (Uber One, not the rides)
 };
 const S = "subscription", B = "bill", M = "membership", T = "transfer";
 const BRANDS: Brand[] = [
   // Transfers & savings — money moved, not spent.
+  // A person paid for a service is a bill, matched before the generic P2P rules.
+  { re: /espericueta/, brand: "house-cleaning", label: "House cleaning (Maria)", type: B, category: "Home", group: "Home services" },
   { re: /zelle/, brand: "zelle", type: T, category: "Transfer:P2P", group: "Family & P2P", noMerge: true },
   { re: /venmo/, brand: "venmo", type: T, category: "Transfer:P2P", group: "Family & P2P", noMerge: true },
   { re: /apple cash sent|cash app|square cash|paypal.*(transfer|sent)/, brand: "p2p", type: T, category: "Transfer:P2P", group: "Family & P2P", noMerge: true },
@@ -155,6 +161,8 @@ const BRANDS: Brand[] = [
   { re: /prosper/, brand: "prosper", label: "Prosper", type: T, category: "Transfer:Brokerage", group: "Savings & investing" },
   { re: /robinhood|vanguard|fidelity|schwab|betterment|wealthfront|acorns|coinbase|\bbrokerage\b/, brand: "brokerage", type: T, category: "Transfer:Brokerage", group: "Savings & investing", noMerge: true },
   { re: /^invest$|^invest /, brand: "invest", type: T, category: "Transfer:Brokerage", group: "Savings & investing", noMerge: true },
+  // A real payment out (owner, 2026-10-18), not a move between own accounts.
+  { re: /jpmorgan chase ext trnsfr/, brand: "jpm-ext-payment", type: B, category: "Other", group: "Payments" },
   { re: /ext trnsfr|external transfer|online transfer|transfer to /, brand: "ext-transfer", type: T, category: "Transfer:Internal", group: "Savings & investing", noMerge: true },
   // Housing, loans, insurance, utilities, government.
   { re: /pennymac/, brand: "pennymac", label: "PennyMac mortgage", type: B, category: "Mortgage", group: "Housing" },
@@ -212,7 +220,8 @@ const BRANDS: Brand[] = [
   { re: /amazon prime|prime video|primevideo/, brand: "amazon-prime", label: "Amazon Prime", type: M, category: "Shopping", group: "Memberships" },
   { re: /costco|sam'?s club|\baaa\b|bj'?s wholesale/, brand: "warehouse", type: M, category: "Shopping", group: "Memberships", noMerge: true },
   { re: /recreation|ymca|\bgym\b|fitness|peloton/, brand: "fitness", type: M, category: "Entertainment", group: "Fitness & rec", noMerge: true },
-  { re: /uber/, brand: "uber", label: "Uber", type: S, category: "Transportation", group: "Transport" },
+  // Rides and deliveries are visits; only the fixed membership charge recurs.
+  { re: /uber|lyft|doordash/, brand: "uber", label: "Uber One", type: M, category: "Transportation", group: "Memberships", only: /\bone\b|membership|dashpass|\bpass\b/i },
   { re: /chewy/, brand: "chewy", label: "Chewy", type: S, category: "Shopping", group: "Pet" },
 ];
 
@@ -229,7 +238,9 @@ export function matchBrand(merchant: string, key = ""): Brand | null {
 // Raw Plaid primaries that leak into a sub's category, mapped by type.
 const TAXO = new Set<string>(CATEGORIES);
 function categoryForType(type: SubType, raw: string | null): string {
-  if (raw && TAXO.has(raw) && !(type === "transfer" && !raw.startsWith("Transfer"))) return raw;
+  // A Transfer:* category belongs to a transfer only; a bill or subscription never keeps one.
+  const isXfer = !!raw && raw.startsWith("Transfer");
+  if (raw && TAXO.has(raw) && (type === "transfer") === isXfer) return raw;
   if (type === "transfer") return raw === "TRANSFER_OUT" ? "Transfer:P2P" : "Transfer:Internal";
   if (type === "bill") return raw === "Bills" ? "Utilities" : raw === "LOAN_PAYMENTS" ? "Other" : "Other";
   return "Subscriptions";
@@ -686,21 +697,67 @@ function cycleStats(txns: SubMemberTxn[], interval: number) {
   return { perCycle: round2(tot / k), history, variable, lastChange, first: txns[0].date, last };
 }
 
+// Streams inside one row: the card it bills plus the descriptor family (first
+// five letters of the raw descriptor), so Verizon on checking and Verizon
+// Wireless on a card, or two cards' annual fees, read as separate lines. A
+// stream with no charge in the last 1.5 cycles of the row has handed off.
+const streamKey = (t: SubMemberTxn) => `${t.account_mask ?? t.account}|${norm(t.name ?? "").replace(/ /g, "").slice(0, 5)}`;
+function streamsOf(txns: SubMemberTxn[], cyc: number): SubStream[] {
+  const last = txns[txns.length - 1].date;
+  const by = new Map<string, SubMemberTxn[]>();
+  for (const t of txns) { const k = streamKey(t); const a = by.get(k); if (a) a.push(t); else by.set(k, [t]); }
+  return [...by.entries()].map(([id, ts]) => {
+    const tail = ts.slice(-3).map((t) => Math.abs(t.amount)).sort((a, b) => a - b);
+    return {
+      id, label: ts[ts.length - 1].name ?? "", mask: ts[0].account_mask, last: ts[ts.length - 1].date,
+      amount: round2(tail[Math.floor(tail.length / 2)]), count: ts.length,
+      live: dayNum(last) - dayNum(ts[ts.length - 1].date) <= cyc * 1.5,
+    };
+  }).sort((a, b) => b.last.localeCompare(a.last));
+}
+
+// Monthly from what recurs now: the per-cycle average of the last cycles,
+// over live streams only (a descriptor that handed off adds nothing). For a
+// fixed-price service, an amount seen once in the whole history is a one-off
+// (a refill, an app purchase, a Kindle book): left out of monthly and reported
+// on its own. A price change still counts (each price repeats). When no amount
+// repeats at all the service is usage-billed or brand new, and every charge
+// counts. Bills, transfers and yearly fees are never trimmed.
+function recurringMonthly(txns: SubMemberTxn[], streams: SubStream[], cyc: number, fixedPrice: boolean) {
+  const liveIds = new Set(streams.filter((st) => st.live).map((st) => st.id));
+  const liveTx = txns.filter((t) => liveIds.has(streamKey(t)));
+  const use = liveTx.length ? liveTx : txns;
+  if (!fixedPrice) return { monthly: round2(cycleStats(use, cyc).perCycle * (30.44 / cyc)), oneOffs: null };
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.5, 0.03 * Math.max(a, b));
+  const amts = use.map((t) => Math.abs(t.amount));
+  const repeats = (a: number) => amts.filter((b) => near(a, b)).length >= 2;
+  // Mostly fixed prices (repeats cover at least half the charges) or it is usage-billed.
+  const rep = use.filter((t) => repeats(Math.abs(t.amount)));
+  const regular = rep.length * 2 >= use.length ? rep : use;
+  const anchor = dayNum(use[use.length - 1].date);
+  const singles = use.filter((t) => !regular.includes(t) && dayNum(t.date) > anchor - 120);
+  return {
+    monthly: regular.length ? round2(cycleStats(regular, cyc).perCycle * (30.44 / cyc)) : 0,
+    oneOffs: singles.length ? { count: singles.length, total: round2(singles.reduce((a, t) => a + Math.abs(t.amount), 0)) } : null,
+  };
+}
+
+
 // Merchant keys whose outflows are mostly credit-card payments or transfers
 // between own accounts (the same categories detectRecurring skips). Plaid's
 // recurring streams include card autopays; counting one as a bill double-counts
 // every card charge behind it.
 function movementKeys(): Set<string> {
   const rows = db().prepare(
-    `SELECT COALESCE(merchant, name) AS m, category FROM transactions
+    `SELECT COALESCE(merchant, name) AS m, name, category FROM transactions
      WHERE amount > 0 AND COALESCE(merchant, name) IS NOT NULL AND date >= date('now','-400 days')`
-  ).all() as { m: string; category: string | null }[];
+  ).all() as { m: string; name: string | null; category: string | null }[];
   const tally = new Map<string, { move: number; n: number }>();
   for (const r of rows) {
     const k = norm(r.m);
     const t = tally.get(k) ?? { move: 0, n: 0 };
     t.n++;
-    if (r.category === "CreditCardPayment" || r.category === "Transfer:Internal") t.move++;
+    if ((r.category === "CreditCardPayment" && isCardPayoff(r.name ?? r.m)) || r.category === "Transfer:Internal") t.move++;
     tally.set(k, t);
   }
   return new Set([...tally].filter(([, t]) => t.move * 2 > t.n).map(([k]) => k));
@@ -710,7 +767,7 @@ function movementKeys(): Set<string> {
 // instead; a name you typed, or a clean Plaid merchant name, stays as it is.
 function displayNameFor(merchant: string, b: Brand | null): string {
   if (!b?.label) return merchant;
-  const raw = merchant === merchant.toUpperCase() || /[#*]|\d{4,}/.test(merchant);
+  const raw = !!b.only || merchant === merchant.toUpperCase() || /[#*]|\d{4,}/.test(merchant);
   return raw ? b.label : merchant;
 }
 
@@ -753,15 +810,19 @@ function buildView(direction: "expense" | "income" = "expense"): { subs: Subscri
       const prices = members.flatMap((m) => [m.avg_amount, m.last_amount]).filter((x) => x > 0);
       txns = txns.filter((t) => prices.some((p) => Math.abs(Math.abs(t.amount) - p) <= Math.max(0.5, p * 0.1)));
     }
-    txnsOf.set(r.id, txns);
     const brand = matchBrand(r.merchant, r.merchant_key);
+    // Visit merchants (Uber rides): only the membership charge recurs.
+    const hadTxns = txns.length > 0;
+    if (brand?.only) txns = txns.filter((t) => brand.only!.test(t.name ?? ""));
+    const onlyEmptied = hadTxns && txns.length === 0;
+    txnsOf.set(r.id, txns);
     const hasKids = (kids.get(r.id) ?? []).length > 0;
     const s: Subscription = {
       ...base,
       // A merged row stands for the service, not one of its descriptors.
       displayName: hasKids && brand?.label ? brand.label : displayNameFor(r.merchant, brand),
       group: "subs", svcGroup: brand?.group ?? null,
-      perCycle: base.avgAmount, annual: 0, accounts: [], history: [], lastChange: null,
+      perCycle: base.avgAmount, annual: 0, accounts: [], history: [], lastChange: null, streams: [], oneOffs: null,
       aliases: (kids.get(r.id) ?? []).map((k) => ({ id: k.id, merchant: k.merchant })),
       overlapWith: [], possibleDupOf: null, unlabelled: !base.type,
     };
@@ -771,9 +832,12 @@ function buildView(direction: "expense" | "income" = "expense"): { subs: Subscri
       s.history = st.history;
       s.lastChange = st.lastChange;
       s.variableAmount = st.variable || base.variableAmount;
+      s.streams = streamsOf(txns, cyc);
       if (!overBroad) {
-        s.perCycle = st.perCycle;
-        s.monthly = round2(st.perCycle * (30.44 / cyc));
+        const r2 = recurringMonthly(txns, s.streams, cyc, s.type !== "bill" && s.type !== "transfer" && s.cadence !== "yearly" && s.cadence !== "quarterly");
+        s.monthly = r2.monthly;
+        s.perCycle = round2(r2.monthly * (cyc / 30.44));
+        s.oneOffs = r2.oneOffs;
       }
       s.count = txns.length;
       s.firstDate = [st.first, ...members.map((m) => m.first_date)].filter(Boolean).sort()[0] as string;
@@ -786,6 +850,8 @@ function buildView(direction: "expense" | "income" = "expense"): { subs: Subscri
       const acc = new Map<string, SubEnrichment["accounts"][number]>();
       for (const t of txns) acc.set(`${t.account}|${t.account_mask}`, { label: t.account, mask: t.account_mask, institution: t.account_institution, last: t.date });
       s.accounts = [...acc.values()].sort((a, b) => b.last.localeCompare(a.last));
+    } else if (onlyEmptied) {
+      s.perCycle = 0; s.monthly = 0; s.priceChange = 0; // rides only, no membership charge
     } else {
       s.perCycle = base.avgAmount;
       s.priceChange = 0;
@@ -861,7 +927,8 @@ const live = (s: Subscription) => s.state === "active" || s.state === "trial";
 // Recurring. The hero counts only live subscriptions and memberships; bills and
 // transfers each carry their own subtotal; ended rows count nowhere.
 export function listSubscriptions(entity?: string | null): SubsView {
-  const all = buildView("expense").subs.filter((s) => s.state !== "dismissed");
+  // Under $1/mo is noise (a 3-cent tax withholding, an Uber row with no membership charge).
+  const all = buildView("expense").subs.filter((s) => s.state !== "dismissed" && s.monthly >= 1);
   const subs = entity && entity !== "all" ? all.filter((s) => s.entity === entity) : all;
   const hero = subs.filter((s) => s.group === "subs" && live(s));
   const bills = subs.filter((s) => s.group === "bills" && live(s));
@@ -1082,8 +1149,10 @@ export function labelSubscriptions(): { typed: number; categorized: number } {
     }
     if (r.category_source !== "user") {
       let cat = r.category;
-      if (rule.brand) cat = rule.brand.category;
-      else if (!cat || !TAXO.has(cat) || (type === "transfer" && !cat.startsWith("Transfer"))) cat = type ? categoryForType(type, r.category) : rule.category ?? (cat && TAXO.has(cat) ? cat : "Other");
+      // The brand category fits only the brand type; after you re-type a row
+      // (a Zelle payee who is really a bill) the category follows your type.
+      if (rule.brand && rule.brand.type === type) cat = rule.brand.category;
+      else if (!cat || !TAXO.has(cat) || (type === "transfer") !== cat.startsWith("Transfer")) cat = type ? categoryForType(type, r.category) : rule.category ?? (cat && TAXO.has(cat) ? cat : "Other");
       if (cat !== r.category) { setCat.run(cat, "rule", r.id); categorized++; }
     }
   }

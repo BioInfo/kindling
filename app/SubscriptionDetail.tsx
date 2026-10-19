@@ -196,9 +196,24 @@ export function SubscriptionDetailModal({
               {fact("Cadence", sub.cadence)}
               {fact("Last price change", sub.lastChange ? `${money(sub.lastChange.from)} → ${money(sub.lastChange.to)}` : "none seen")}
             </div>
-            {sub.accounts.length > 1 && (
+            {/* Streams: one line per card + descriptor, so two bills under one
+                brand (or two cards' annual fees) are visible, and a handed-off
+                descriptor reads as stopped rather than silently summed. */}
+            {sub.streams.length > 1 && (
+              <div className="mb-3 rounded-xl p-3 text-sm" style={{ background: "var(--bg)" }}>
+                <div className="mb-1 text-xs font-medium" style={{ color: "var(--muted)" }}>Billed as {sub.streams.length} streams</div>
+                {sub.streams.map((st) => (
+                  <div key={st.id} className="flex items-center gap-2 py-0.5" style={{ opacity: st.live ? 1 : 0.6 }}>
+                    <span className="min-w-0 flex-1 truncate">{st.mask ? `••${st.mask} ` : ""}{st.label}</span>
+                    <span className="shrink-0 text-xs tabular-nums" style={{ color: "var(--muted)" }}>{st.live ? `last ${st.last}` : `stopped ${st.last}`}</span>
+                    <span className="w-20 shrink-0 text-right tabular-nums">{money(st.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {sub.oneOffs && (
               <div className="mb-3 text-xs" style={{ color: "var(--muted)" }}>
-                Also billed to {sub.accounts.slice(1).map((a) => acctLabel(a.label, a.mask, a.institution)).join(", ")}
+                Left out of the monthly figure: {sub.oneOffs.count} one-off charge{sub.oneOffs.count > 1 ? "s" : ""} totalling {money(sub.oneOffs.total)} in the last four months.
               </div>
             )}
             {sub.overlapWith.length > 0 && (
