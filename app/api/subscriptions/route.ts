@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { reconcileSubscriptions, listSubscriptions, createManualSubscription } from "@/lib/subscriptions";
+import { postSyncEnrich } from "@/lib/enrich";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,8 @@ export async function GET(req: Request) {
   try {
     await reconcileSubscriptions({ plaid: refresh || !hasPlaid });
   } catch { /* Plaid stream pull is best-effort; the heuristic still populated */ }
+  // Merge + label are cheap local SQL; the LLM pass only runs after a sync.
+  await postSyncEnrich({ llm: false, reconcile: false });
   return NextResponse.json(listSubscriptions(entity));
 }
 
@@ -39,5 +42,6 @@ export async function POST(req: Request) {
   try {
     await reconcileSubscriptions({ plaid: true });
   } catch { /* best-effort */ }
+  await postSyncEnrich({ llm: false, reconcile: false });
   return NextResponse.json(listSubscriptions(entity));
 }

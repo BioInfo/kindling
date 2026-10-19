@@ -18,7 +18,8 @@ type MemberTxn = {
 
 const field = { background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text)" };
 const STATES = ["active", "trial", "cancelled"] as const;
-const TYPES = ["", "subscription", "obligation", "membership", "other"] as const;
+const TYPES = ["", "subscription", "bill", "membership", "transfer"] as const;
+const CADENCES = ["", "weekly", "biweekly", "monthly", "quarterly", "yearly"] as const;
 const SWATCHES = ["var(--info)", "var(--good)", "var(--warn)", "#f472b6", "#a78bfa", "#22d3ee", "#fb923c", "#94a3b8"];
 
 type CancelGuide = { steps: string[]; email: string; difficulty: string | null; sources: { title: string; url: string }[] };
@@ -34,6 +35,10 @@ export function SubscriptionDetailModal({
   const z = useModalZ();
   const [sub, setSub] = useState<Subscription | null>(null);
   const [txns, setTxns] = useState<MemberTxn[]>([]);
+  const [targets, setTargets] = useState<{ id: string; merchant: string; sameBrand: boolean }[]>([]);
+  const [mergeInto, setMergeInto] = useState("");
+  const [cadence, setCadence] = useState("");
+  const [tick, setTick] = useState(0); // bump to reload after a merge/unmerge
   const [err, setErr] = useState(false);
 
   const [state, setState] = useState("active");
@@ -74,20 +79,39 @@ export function SubscriptionDetailModal({
     setSub(null); setErr(false); setSaved(false); setGuide(null); setGuideErr(null);
     fetch(`/api/subscriptions/${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((x: { sub: Subscription; txns: MemberTxn[] }) => {
+      .then((x: { sub: Subscription; txns: MemberTxn[]; mergeTargets?: { id: string; merchant: string; sameBrand: boolean }[] }) => {
         if (!live) return;
-        setSub(x.sub); setTxns(x.txns ?? []);
+        setSub(x.sub); setTxns(x.txns ?? []); setTargets(x.mergeTargets ?? []); setMergeInto("");
         const s = x.sub.state ?? "active", ty = x.sub.type ?? "", c = x.sub.category ?? "";
         const m = x.sub.merchant ?? "", e = x.sub.entity ?? "personal", tr = x.sub.trialEnds ?? "", n = x.sub.note ?? "";
-        const col = x.sub.color ?? "", ic = x.sub.icon ?? "", wm = x.sub.workMove ?? "";
-        setState(s); setType(ty); setCat(c); setMerch(m); setEntity(e); setTrialEnds(tr); setNote(n); setColor(col); setIcon(ic); setWorkMove(wm);
-        setBase({ state: s, type: ty, category: c, merchant: m, entity: e, trial_ends: tr, note: n, color: col, icon: ic, work_move: wm });
+        const col = x.sub.color ?? "", ic = x.sub.icon ?? "", wm = x.sub.workMove ?? "", cd = x.sub.userCadence ?? "";
+        setState(s); setType(ty); setCat(c); setMerch(m); setEntity(e); setTrialEnds(tr); setNote(n); setColor(col); setIcon(ic); setWorkMove(wm); setCadence(cd);
+        setBase({ state: s, type: ty, category: c, merchant: m, entity: e, trial_ends: tr, note: n, color: col, icon: ic, work_move: wm, user_cadence: cd });
       })
       .catch(() => { if (live) setErr(true); });
     return () => { live = false; };
-  }, [id]);
+  }, [id, tick]);
 
-  const cur: Record<string, string> = { state, type, category: cat, merchant: merch, entity, trial_ends: trialEnds, note, color, icon, work_move: workMove };
+  const cur: Record<string, string> = { state, type, category: cat, merchant: merch, entity, trial_ends: trialEnds, note, color, icon, work_move: workMove, user_cadence: cadence };
+
+  // Merge this row into another service, or split an alias back out. Both are
+  // stored, so the next sync keeps them.
+  const doMerge = async () => {
+    if (!sub || !mergeInto) return;
+    await fetch(`/api/subscriptions/${encodeURIComponent(sub.id)}/merge`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ into: mergeInto }),
+    }).catch(() => {});
+    onApplied(); onClose();
+  };
+  const unmerge = async (aliasId: string) => {
+    await fetch(`/api/subscriptions/${encodeURIComponent(aliasId)}/merge`, { method: "DELETE" }).catch(() => {});
+    onApplied(); setTick((t) => t + 1);
+  };
+  const hide = async () => {
+    if (!sub) return;
+    await fetch(`/api/subscriptions/${encodeURIComponent(sub.id)}`, { method: "DELETE" }).catch(() => {});
+    onApplied(); onClose();
+  };
 
   const loadGuide = () => {
     setGuideBusy(true); setGuideErr(null); setGuide(null);
@@ -102,9 +126,9 @@ export function SubscriptionDetailModal({
     const r = await fetch(`/api/subscriptions/${encodeURIComponent(id)}/identify`, { method: "POST" })
       .then((x) => x.json()).catch(() => null);
     setSuggesting(false);
-    if (!r || r.error) { setSuggestErr("Couldn't identify — model may be cold, try again"); return; }
+    if (!r || r.error) { setSuggestErr("Couldn't identify. The model may be cold, try again"); return; }
     const name = (r.suggestedName || r.merchant || "").trim();
-    if (!name) { setSuggestErr("No confident match — edit the name yourself"); return; }
+    if (!name) { setSuggestErr("No confident match. Edit the name yourself"); return; }
     setMerch(name);
     setSuggestion({ explanation: r.explanation ?? null, confidence: r.confidence ?? null });
   };
@@ -123,29 +147,36 @@ export function SubscriptionDetailModal({
     if (res?.ok) { setBase({ ...cur }); setSaved(true); onApplied(); }
   };
 
-  // Price-history bars: one per charge. The last bar is amber when the latest
-  // charge sits above the average (a price hike), the same signal as the row flag.
-  const amts = txns.map((t) => Math.abs(t.amount));
-  const max = Math.max(...amts, 1);
-  const hiked = (sub?.priceChange ?? 0) > 1;
+  // Bars are per-cycle totals (every descriptor and seat summed per billing
+  // cycle), the same axis as "per charge cycle" in the facts grid. The bar where
+  // the price last moved is amber.
+  const hist = sub?.history ?? [];
+  const max = Math.max(...hist.map((h) => h.amount), 1);
+  const changedAt = sub?.lastChange?.date ?? null;
+  const card = sub?.accounts[0];
+  const fact = (label: string, value: React.ReactNode) => (
+    <div className="min-w-0">
+      <div className="text-[11px]" style={{ color: "var(--muted)" }}>{label}</div>
+      <div className="truncate text-sm tabular-nums">{value}</div>
+    </div>
+  );
 
   return (
-    <div onClick={onClose} className="fixed inset-0 flex items-start justify-center overflow-y-auto p-4 sm:p-8" style={{ zIndex: z, background: "var(--overlay)" }}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-2xl p-5" style={{ ...panel, marginTop: "4vh" }}>
+    <div onClick={onClose} className="fixed inset-0 flex items-start justify-center overflow-y-auto p-3 sm:p-8" style={{ zIndex: z, background: "var(--overlay)" }}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-2xl p-4 sm:p-5" style={{ ...panel, marginTop: "3vh" }}>
         {/* Header */}
         <div className="mb-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-lg font-semibold">{sub?.merchant ?? "Subscription"}</div>
+            <div className="truncate text-lg font-semibold">{sub?.displayName ?? "Subscription"}</div>
             {sub && (
               <div className="text-xs" style={{ color: "var(--muted)" }}>
-                <span className="tabular-nums" style={{ color: "var(--text)" }}>{money(sub.monthly)}/mo</span>
-                {" · "}{sub.cadence}{" · "}{money(sub.lastAmount)}/charge
-                {sub.firstDate ? ` · since ${sub.firstDate}` : ""}
-                {!sub.isActive ? " · inactive" : ""}
+                {sub.group === "ended" ? "Ended" : sub.group === "transfers" ? "Transfer" : sub.group === "bills" ? "Bill" : sub.type === "membership" ? "Membership" : "Subscription"}
+                {sub.svcGroup ? ` · ${sub.svcGroup}` : ""}
+                {sub.displayName !== sub.merchant ? ` · ${sub.merchant}` : ""}
               </div>
             )}
           </div>
-          <button onClick={onClose} className="shrink-0 rounded-lg px-2 py-1 text-sm" style={field}>✕</button>
+          <button onClick={onClose} className="h-11 w-11 shrink-0 rounded-lg text-sm" style={field} aria-label="Close">✕</button>
         </div>
 
         {err && <div className="rounded-lg p-3 text-sm" style={{ color: "var(--bad)", background: "var(--bg)" }}>Couldn’t load this subscription.</div>}
@@ -153,24 +184,75 @@ export function SubscriptionDetailModal({
 
         {sub && (
           <>
-            {/* Price history */}
-            {amts.length > 1 && (
+            {/* Facts */}
+            <div className="mb-3 grid grid-cols-3 gap-x-3 gap-y-2 rounded-xl p-3" style={{ background: "var(--bg)" }}>
+              {fact("Monthly", money(sub.monthly))}
+              {fact("Yearly", money(sub.annual))}
+              {fact(`Per ${sub.cadence === "yearly" ? "year" : "cycle"}`, money(sub.perCycle))}
+              {fact("Billed to", card ? `${card.mask ? `••${card.mask}` : acctLabel(card.label, card.mask, card.institution)}` : "unknown")}
+              {fact(sub.group === "ended" ? "Last charge" : "Next charge", sub.group === "ended" ? sub.lastDate ?? "none" : sub.nextExpected ?? "unknown")}
+              {fact("First seen", sub.firstDate ?? "unknown")}
+              {fact("Charges", `${sub.count}${sub.variableAmount ? " · varies" : ""}`)}
+              {fact("Cadence", sub.cadence)}
+              {fact("Last price change", sub.lastChange ? `${money(sub.lastChange.from)} → ${money(sub.lastChange.to)}` : "none seen")}
+            </div>
+            {sub.accounts.length > 1 && (
+              <div className="mb-3 text-xs" style={{ color: "var(--muted)" }}>
+                Also billed to {sub.accounts.slice(1).map((a) => acctLabel(a.label, a.mask, a.institution)).join(", ")}
+              </div>
+            )}
+            {sub.overlapWith.length > 0 && (
+              <div className="mb-3 rounded-lg px-3 py-2 text-sm" style={{ background: "var(--bg)", borderLeft: "3px solid #a78bfa" }}>
+                Possible overlap ({sub.overlapWith[0].label}): {sub.overlapWith.map((o) => o.merchant).join(", ")}
+              </div>
+            )}
+
+            {/* Per-cycle history */}
+            {hist.length > 1 && (
               <div className="mb-3 rounded-xl p-3" style={{ background: "var(--bg)" }}>
                 <div className="mb-1.5 flex items-center justify-between text-xs" style={{ color: "var(--muted)" }}>
-                  <span>Charge history</span><span>{amts.length} charges{hiked ? " · price rose" : ""}</span>
+                  <span>Billed per cycle</span><span>{hist.length} cycles{changedAt ? ` · changed ${changedAt}` : ""}</span>
                 </div>
                 <div className="flex items-end gap-1" style={{ height: 56 }}>
-                  {txns.map((t, i) => (
-                    <div key={t.id} className="min-w-0 flex-1 rounded-t" title={`${t.date}: ${money(Math.abs(t.amount))}`}
-                      style={{ height: `${Math.max(3, (Math.abs(t.amount) / max) * 100)}%`, minHeight: 2,
-                        background: hiked && i === txns.length - 1 ? "var(--warn-strong)" : "var(--accent)" }} />
+                  {hist.map((h) => (
+                    <div key={h.date} className="min-w-0 flex-1 rounded-t" title={`${h.date}: ${money(h.amount)}`}
+                      style={{ height: `${Math.max(3, (h.amount / max) * 100)}%`, minHeight: 2,
+                        background: h.date === changedAt ? "var(--warn-strong)" : "var(--accent)" }} />
                   ))}
                 </div>
                 <div className="mt-1 flex justify-between" style={{ color: "var(--muted)", fontSize: 10 }}>
-                  <span>{txns[0]?.date}</span><span>{txns[txns.length - 1]?.date}</span>
+                  <span>{hist[0]?.date}</span><span>{hist[hist.length - 1]?.date}</span>
                 </div>
               </div>
             )}
+
+            {/* Merged descriptors + merge into… */}
+            <div className="mb-3 flex flex-col gap-2 rounded-xl p-3" style={{ background: "var(--bg)" }}>
+              <div className="text-xs font-medium" style={{ color: "var(--muted)" }}>
+                {sub.aliases.length ? `Bank descriptors merged here (${sub.aliases.length + 1})` : "Bank descriptor"}
+              </div>
+              <div className="text-sm">{sub.merchant}</div>
+              {sub.aliases.map((a) => (
+                <div key={a.id} className="flex items-center gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate">{a.merchant}</span>
+                  <button onClick={() => unmerge(a.id)} className="min-h-11 shrink-0 rounded-lg px-3 text-xs" style={field}
+                    title="Split this descriptor back into its own row; it will not be auto-merged again">Unmerge</button>
+                </div>
+              ))}
+              {sub.possibleDupOf && (
+                <div className="text-xs" style={{ color: "var(--info)" }}>Looks like the same service as {sub.possibleDupOf.merchant}.</div>
+              )}
+              <div className="flex items-center gap-2">
+                <select value={mergeInto} onChange={(e) => setMergeInto(e.target.value)} className="min-h-11 min-w-0 flex-1 rounded-lg px-2 text-sm" style={field}
+                  aria-label="Merge into another service">
+                  <option value="">Merge into…</option>
+                  {targets.map((t) => <option key={t.id} value={t.id}>{t.sameBrand ? "★ " : ""}{t.merchant}</option>)}
+                </select>
+                <button onClick={doMerge} disabled={!mergeInto} className="min-h-11 shrink-0 rounded-lg px-3 text-sm font-medium"
+                  style={{ background: "var(--accent-deep)", color: "white", opacity: mergeInto ? 1 : 0.5 }}>Merge</button>
+              </div>
+            </div>
+
 
             {/* Editable curated fields */}
             <div className="flex flex-col gap-3 rounded-xl p-3" style={{ background: "var(--bg)" }}>
@@ -184,6 +266,12 @@ export function SubscriptionDetailModal({
                 <span style={{ color: "var(--muted)" }}>Type</span>
                 <select value={type} onChange={(e) => setType(e.target.value)} className="rounded px-2 py-1 text-xs" style={field}>
                   {TYPES.map((t) => <option key={t} value={t}>{t || "unset"}</option>)}
+                </select>
+              </label>
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span style={{ color: "var(--muted)" }} title="Override when detection reads an annual plan as monthly (or the other way round)">Cadence</span>
+                <select value={cadence} onChange={(e) => setCadence(e.target.value)} className="rounded px-2 py-1 text-xs" style={field}>
+                  {CADENCES.map((c) => <option key={c} value={c}>{c || `detected (${sub.cadence})`}</option>)}
                 </select>
               </label>
               <label className="flex items-center justify-between gap-3 text-sm">
@@ -251,10 +339,12 @@ export function SubscriptionDetailModal({
 
             <div className="mt-3 flex items-center gap-3">
               <button onClick={save} disabled={!dirty || saving}
-                className="rounded-lg px-4 py-2 text-sm font-medium" style={{ background: "var(--accent-deep)", color: "white", opacity: !dirty || saving ? 0.5 : 1 }}>
+                className="min-h-11 rounded-lg px-4 text-sm font-medium" style={{ background: "var(--accent-deep)", color: "white", opacity: !dirty || saving ? 0.5 : 1 }}>
                 {saving ? "Saving…" : "Save changes"}
               </button>
               {saved && !dirty && <span className="text-xs" style={{ color: "var(--good)" }}>✓ Saved</span>}
+              <button onClick={hide} className="ml-auto min-h-11 rounded-lg px-3 text-sm" style={{ ...field, color: "var(--muted)" }}
+                title="Not a recurring charge: hide it from this list and from forecasts">Hide</button>
             </div>
 
             {/* AI cancel-guide */}

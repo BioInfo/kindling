@@ -12,6 +12,7 @@ import { CATEGORIES } from "@/lib/taxonomy";
 // overlap detection, cancel-guide); Phase 3 adds the calendar, manual add, and
 // per-sub colour/icon identity. Matches the existing Plaid system throughout.
 
+export type SubGroup = "subs" | "bills" | "transfers" | "ended";
 export type Subscription = {
   id: string; entity: string; merchant: string; merchantKey: string;
   category: string | null; type: string | null; cadence: string; intervalDays: number;
@@ -21,14 +22,27 @@ export type Subscription = {
   state: "active" | "trial" | "cancelled" | "dismissed";
   trialEnds: string | null; color: string | null; icon: string | null;
   note: string | null; workMove: string | null; source: string; plaidStreamId: string | null;
+  mergedInto: string | null; typeSource: string | null; categorySource: string | null; userCadence: string | null;
+  // enrichment (server-computed from the union of member charges)
+  displayName: string; group: SubGroup; svcGroup: string | null;
+  perCycle: number; annual: number;
+  accounts: { label: string; mask: string | null; institution: string | null; last: string }[];
+  history: { date: string; amount: number }[];
+  lastChange: { date: string; from: number; to: number } | null;
+  aliases: { id: string; merchant: string }[];
+  overlapWith: { id: string; merchant: string; label: string }[];
+  possibleDupOf: { id: string; merchant: string } | null;
+  unlabelled: boolean;
 };
 export type SubsData = {
   subs: Subscription[];
   monthlyTotal: number; annualTotal: number; next30Total: number;
-  obligationsMonthly: number; obligationsCount: number;
+  billsMonthly: number; billsCount: number;
+  transfersMonthly: number; transfersCount: number;
+  endedCount: number;
   workMoveMonthly: number; workMoveCount: number;
   byCategory: { key: string; value: number; pct: number }[];
-  counts: { active: number; priceHikes: number; unused: number };
+  counts: { active: number; priceHikes: number; overlaps: number; duplicates: number; unlabelled: number };
 };
 type OverlapGroup = { label: string; note: string; ids: string[]; monthly: number; members: { id: string; merchant: string; monthly: number }[] };
 type CutPlanItem = { id: string; merchant: string; monthly: number; annual: number; reason: string; kind: "unused" | "hike" | "overlap" | "trial" | "low-value"; confidence: "high" | "medium" | "low" };
@@ -92,9 +106,6 @@ function CategoryDonut({ slices, total }: { slices: { key: string; value: number
   );
 }
 
-const badge = (text: string, color = "var(--muted)") => (
-  <span className="rounded px-1.5 py-0.5 text-xs" style={{ background: "var(--bg)", color }}>{text}</span>
-);
 
 // Charge occurrences for one stream landing inside a given month.
 function occurrencesInMonth(s: Subscription, monthStart: string, monthEnd: string): string[] {
@@ -125,10 +136,10 @@ function CalendarView({ subs }: { subs: Subscription[] }) {
   // date → charges
   const byDay = new Map<string, { merchant: string; amount: number }[]>();
   // Lapsed streams (no charge in ~2 cycles) are history, not upcoming charges.
-  const active = subs.filter((s) => (s.state === "active" || s.state === "trial") && s.isActive);
+  const active = subs.filter((s) => s.group !== "ended");
   for (const s of active) {
     for (const d of occurrencesInMonth(s, monthStart, monthEnd)) {
-      const arr = byDay.get(d) ?? []; arr.push({ merchant: s.merchant, amount: s.lastAmount }); byDay.set(d, arr);
+      const arr = byDay.get(d) ?? []; arr.push({ merchant: s.displayName, amount: s.perCycle }); byDay.set(d, arr);
     }
   }
   const monthTotal = [...byDay.values()].flat().reduce((a, c) => a + c.amount, 0);
@@ -210,6 +221,111 @@ function AddSubscription({ entityQ, onAdded }: { entityQ: string; onAdded: () =>
   );
 }
 
+const GROUPS: { key: SubGroup; label: string; hint: string }[] = [
+  { key: "subs", label: "Subscriptions", hint: "Counted in the number up top" },
+  { key: "bills", label: "Bills", hint: "Mortgage, insurance, utilities: recurring, not cancellable" },
+  { key: "transfers", label: "Transfers & savings", hint: "Money moved, not spent: savings, investing, family" },
+  { key: "ended", label: "Ended", hint: "No charge in about two cycles, or cancelled. Not in any total" },
+];
+
+const shortDate = (d: string | null) => {
+  if (!d) return "";
+  const dt = new Date(d + "T00:00:00Z");
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC", ...(d.slice(0, 4) !== today().slice(0, 4) ? { year: "numeric" } : {}) });
+};
+const CADENCE_SHORT: Record<string, string> = { weekly: "weekly", biweekly: "every 2 wks", semimonthly: "twice a month", monthly: "monthly", quarterly: "quarterly", yearly: "yearly" };
+
+// Initials badge: the service's identity at a glance without a network logo.
+function Initials({ s, color }: { s: Subscription; color: string }) {
+  const words = s.displayName.replace(/[^A-Za-z0-9 ]/g, " ").trim().split(/\s+/);
+  const ini = (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2)).toUpperCase();
+  return (
+    <span aria-hidden className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-semibold"
+      style={{ background: color, color: "#fff" }}>{s.icon || ini}</span>
+  );
+}
+
+const chip = (text: string, color = "var(--muted)") => (
+  <span className="whitespace-nowrap rounded px-1.5 py-px text-[11px] font-medium" style={{ background: "var(--bg)", color }}>{text}</span>
+);
+
+// One row of the ledger: two lines, the whole row opens the detail sheet, and
+// the what-if tick is its own 44px target. Work-card / dismiss / re-type live in
+// the sheet, so nothing small sits next to the amount.
+function SubRow({ s, color, picked, onPick, onOpen, yr }: {
+  s: Subscription; color: string; picked: boolean; onPick?: () => void; onOpen: () => void; yr: boolean;
+}) {
+  const ended = s.group === "ended";
+  const card = s.accounts[0];
+  const meta = [
+    CADENCE_SHORT[s.cadence] ?? s.cadence,
+    card?.mask ? `••${card.mask}` : null,
+    ended ? (s.lastDate ? `last ${shortDate(s.lastDate)}` : null)
+      : s.nextExpected ? `${s.nextExpected < today() ? "was due" : "next"} ${shortDate(s.nextExpected)}` : null,
+  ].filter(Boolean).join(" · ");
+  const amt = yr ? s.annual : s.monthly;
+  return (
+    <div className="flex items-center gap-1 pr-3" style={{ borderTop: "1px solid var(--border)", opacity: ended ? 0.7 : 1 }}>
+      {onPick ? (
+        <label className="flex h-14 w-11 shrink-0 cursor-pointer items-center justify-center" title="What if I cancel this?">
+          <input type="checkbox" checked={picked} onChange={onPick} className="h-5 w-5" style={{ accentColor: "var(--accent)" }}
+            aria-label={`What if I cancel ${s.displayName}`} />
+        </label>
+      ) : <span className="w-3 shrink-0" />}
+      <button onClick={onOpen} className="flex min-h-14 min-w-0 flex-1 items-center gap-3 py-2 text-left">
+        <Initials s={s} color={color} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-medium" style={{ textDecoration: s.state === "cancelled" ? "line-through" : undefined }}>{s.displayName}</span>
+            <span className="shrink-0 tabular-nums font-medium" style={{ color: picked ? "var(--good)" : "var(--text)" }}>
+              {money(amt).replace(/\.\d+$/, amt >= 100 ? "" : "$&")}<span className="text-xs font-normal" style={{ color: "var(--muted)" }}>/{yr ? "yr" : "mo"}</span>
+            </span>
+          </span>
+          <span className="mt-0.5 flex flex-wrap items-center gap-1 text-xs" style={{ color: "var(--muted)" }}>
+            <span className="truncate">{meta}</span>
+            {s.state === "trial" && chip("trial", "var(--warn)")}
+            {!ended && s.priceChange > 0.5 && chip(`up ${money(s.priceChange)}`, "var(--warn-strong)")}
+            {!ended && s.overlapWith.length > 0 && chip(`overlaps ${s.overlapWith[0].merchant}`, "#a78bfa")}
+            {s.possibleDupOf && chip("duplicate?", "var(--info)")}
+            {s.aliases.length > 0 && chip(`${s.aliases.length + 1} descriptors`)}
+            {s.workMove === "pending" && chip("to work card", "var(--warn)")}
+            {s.unlabelled && !ended && chip("unlabelled")}
+          </span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+// A collapsible drawer: header always shows count + subtotal, so the money
+// picture is complete even with every drawer shut. Paginates at 10.
+function GroupSection({ g, rows, open, onToggle, subtotal, children }: {
+  g: (typeof GROUPS)[number]; rows: Subscription[]; open: boolean; onToggle: () => void; subtotal: string;
+  children: (pageRows: Subscription[]) => React.ReactNode;
+}) {
+  const [page, setPage] = useState(0);
+  const [size, setSize] = useState(10);
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+  const p = Math.min(page, pages - 1);
+  return (
+    <section className="overflow-hidden rounded-xl" style={panel}>
+      <button onClick={onToggle} aria-expanded={open} className="flex min-h-12 w-full items-center gap-2 px-3 py-2 text-left" title={g.hint}>
+        <span className="w-4 shrink-0 text-xs" style={{ color: "var(--muted)" }}>{open ? "▾" : "▸"}</span>
+        <span className="font-semibold">{g.label}</span>
+        <span className="text-sm" style={{ color: "var(--muted)" }}>{rows.length}</span>
+        <span className="ml-auto text-sm tabular-nums" style={{ color: g.key === "ended" ? "var(--muted)" : "var(--text)" }}>{subtotal}</span>
+      </button>
+      {open && (
+        <>
+          {rows.length === 0 && <div className="px-3 pb-4 text-sm" style={{ color: "var(--muted)" }}>Nothing here.</div>}
+          {children(rows.slice(p * size, p * size + size))}
+          {rows.length > 10 && <Pager page={p} pageSize={size} total={rows.length} onPage={setPage} onPageSize={(n) => { setSize(n); setPage(0); }} />}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function Subscriptions({
   data, reload, onSub, onRefresh, refreshing, entityQ,
 }: {
@@ -222,7 +338,7 @@ export function Subscriptions({
 }) {
   const [valueView, setValueView] = useState<"mo" | "yr">("mo");
   const [pane, setPane] = useState<"list" | "calendar">("list");
-  const [seg, setSeg] = useState<"subs" | "bills" | "work" | "all">("subs");
+  const [open, setOpen] = useState<Record<SubGroup, boolean>>({ subs: true, bills: false, transfers: false, ended: false });
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [classifying, setClassifying] = useState(false);
   const [classifyMsg, setClassifyMsg] = useState<string | null>(null);
@@ -232,81 +348,64 @@ export function Subscriptions({
   const [planBusy, setPlanBusy] = useState(false);
 
   const subs = useMemo(() => data?.subs ?? [], [data]);
-  const rows = useMemo(
-    () => subs.filter((s) =>
-      seg === "all" ? true
-        : seg === "bills" ? s.type === "obligation"
-        : seg === "work" ? s.workMove === "pending"
-        : s.type !== "obligation"),
-    [subs, seg],
-  );
   const COLORS = useChartTheme().series;
-  const catColor = useMemo(() => {
+  const groupColor = useMemo(() => {
     const m = new Map<string, string>();
     (data?.byCategory ?? []).forEach((c, i) => m.set(c.key, COLORS[i % COLORS.length]));
     return m;
   }, [data, COLORS]);
+  const colorOf = (s: Subscription) => s.color || groupColor.get(s.svcGroup ?? "") || (s.group === "ended" ? "#94a3b8" : COLORS[(s.displayName.charCodeAt(0) || 0) % COLORS.length]);
 
-  const tv = useTableView(rows, {
-    searchOf: (s) => `${s.merchant} ${prettyCategory(s.category)}`,
+  // One search + sort across every drawer; each drawer paginates its own slice.
+  const tv = useTableView(subs, {
+    searchOf: (s) => `${s.displayName} ${s.merchant} ${s.svcGroup ?? ""} ${prettyCategory(s.category)} ${s.aliases.map((a) => a.merchant).join(" ")}`,
     sorts: [
       { key: "monthly", label: "Monthly", val: (s) => s.monthly },
-      { key: "amount", label: "Charge", val: (s) => s.lastAmount },
       { key: "next", label: "Next charge", val: (s) => s.nextExpected ?? "" },
-      { key: "name", label: "Name", val: (s) => s.merchant },
+      { key: "name", label: "Name", val: (s) => s.displayName.toLowerCase() },
+      { key: "since", label: "First seen", val: (s) => s.firstDate ?? "" },
     ],
-    initialSort: "monthly", pageSize: 10,
+    initialSort: "monthly", pageSize: 100000,
   });
+  const searching = tv.toolbar.q.trim().length > 0;
+  const byGroup = (g: SubGroup) => tv.pageRows.filter((s) => s.group === g);
 
   if (!data) return <section className="rounded-xl p-6 text-center" style={{ color: "var(--muted)", ...panel }}>Loading…</section>;
 
-  const counted = (s: Subscription) => (s.state === "active" || s.state === "trial") && s.type !== "obligation";
+  const counted = (s: Subscription) => s.group === "subs" && (s.state === "active" || s.state === "trial");
   const savingMo = subs.filter((s) => picked.has(s.id) && counted(s)).reduce((a, s) => a + s.monthly, 0);
-  const adjMo = Math.max(0, data.monthlyTotal - savingMo);
-  const heroNow = (picked.size ? adjMo : data.monthlyTotal) * (valueView === "mo" ? 1 : 12);
-  const heroWas = valueView === "mo" ? data.monthlyTotal : data.annualTotal;
-
-  const strip: { id?: string; icon: string; color: string; text: string }[] = [];
-  for (const s of subs) if (counted(s) && s.priceChange > 1) strip.push({ id: s.id, icon: "↗", color: "var(--warn-strong)", text: `${s.merchant} up ${money(s.priceChange)} — now ${money(s.lastAmount)}` });
-  for (const s of subs) if (s.state === "active" && !s.isActive && s.monthly >= 1 && s.type !== "obligation") strip.push({ id: s.id, icon: "⊘", color: "var(--info)", text: `${s.merchant} looks unused · ${money(s.monthly)}/mo` });
-  const topCat = data.byCategory[0];
-  if (topCat && topCat.pct >= 0.4) strip.push({ icon: "▣", color: "#a78bfa", text: `${prettyCategory(topCat.key)} is ${Math.round(topCat.pct * 100)}% of recurring spend` });
+  const yr = valueView === "yr";
+  const k = yr ? 12 : 1;
+  const heroNow = Math.max(0, data.monthlyTotal - savingMo) * k;
+  const heroWas = data.monthlyTotal * k;
 
   const toggle = (id: string) => setPicked((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const dismiss = async (id: string) => {
-    await fetch(`/api/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+  const merge = async (id: string, into: string) => {
+    await fetch(`/api/subscriptions/${encodeURIComponent(id)}/merge`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ into }),
+    }).catch(() => {});
+    reload();
+  };
+  const notDup = async (id: string) => {
+    await fetch(`/api/subscriptions/${encodeURIComponent(id)}/merge`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notDuplicate: true }),
+    }).catch(() => {});
+    reload();
+  };
+  const toggleBill = async (id: string) => {
+    await fetch(`/api/subscriptions/${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "bill" }),
+    }).catch(() => {});
     setPicked((p) => { const n = new Set(p); n.delete(id); return n; });
-    reload();
-  };
-  // One-tap "this is a bill, not a subscription" — flip type obligation ⇄
-  // subscription. Setting obligation moves it to the Bills segment and drops it
-  // out of the hero, the cut-plan, and the what-if meter (those all exclude
-  // obligations). Survives the next reconcile (type is user-owned).
-  const toggleBill = async (s: Subscription) => {
-    const next = s.type === "obligation" ? "subscription" : "obligation";
-    await fetch(`/api/subscriptions/${encodeURIComponent(s.id)}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: next }),
-    }).catch(() => {});
-    if (next === "obligation") {
-      setPicked((p) => { const n = new Set(p); n.delete(s.id); return n; });
-      setPlan((pl) => (pl ? { ...pl, items: pl.items.filter((i) => i.id !== s.id) } : pl));
-    }
-    reload();
-  };
-  // One-tap tag/untag a sub to move to a work card (pending ⇄ off).
-  const toggleWork = async (s: Subscription) => {
-    const next = s.workMove === "pending" ? "" : "pending";
-    await fetch(`/api/subscriptions/${encodeURIComponent(s.id)}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ work_move: next }),
-    }).catch(() => {});
+    setPlan((pl) => (pl ? { ...pl, items: pl.items.filter((i) => i.id !== id) } : pl));
     reload();
   };
   const classify = async () => {
     setClassifying(true); setClassifyMsg(null);
     const r = await fetch(`/api/subscriptions/classify${entityQ}`, { method: "POST" }).then((x) => x.json()).catch(() => null);
     setClassifying(false);
-    if (r?.updated != null) { setClassifyMsg(`Classified ${r.updated} of ${r.processed}`); reload(); }
-    else setClassifyMsg("Classify failed — model may be cold, try again");
+    if (r?.updated != null) { setClassifyMsg(`Labelled ${r.updated} of ${r.processed}`); reload(); }
+    else setClassifyMsg("Labelling failed. The model may be cold, try again");
   };
   const findOverlaps = async () => {
     setOlBusy(true);
@@ -318,120 +417,150 @@ export function Subscriptions({
     setPlanBusy(true);
     const r: CutPlan | null = await fetch(`/api/subscriptions/cut-plan${entityQ}`).then((x) => x.json()).catch(() => null);
     setPlanBusy(false);
-    setPlan(r ?? { headline: "Couldn't build a plan — try again", items: [], totalMonthly: 0, totalAnnual: 0, aiUsed: false });
+    setPlan(r ?? { headline: "Couldn't build a plan. Try again", items: [], totalMonthly: 0, totalAnnual: 0, aiUsed: false });
   };
-  // Tick every plan row into the what-if meter (the hero recomputes live).
   const tickAllPlan = () => { if (plan) setPicked((p) => new Set([...p, ...plan.items.map((i) => i.id)])); };
 
-  const valBtn = (v: "mo" | "yr", label: string) => (
-    <button onClick={() => setValueView(v)} className="rounded-md px-2.5 py-1 text-xs font-medium"
+  // Two ended descriptors of one brand are history, not clutter worth a prompt.
+  const groupOf = new Map(subs.map((s) => [s.id, s.group]));
+  const entityOf = new Map(subs.map((s) => [s.id, s.entity]));
+  const dups = subs.filter((s) => s.possibleDupOf && !(s.group === "ended" && groupOf.get(s.possibleDupOf.id) === "ended"));
+  const seg = (v: "mo" | "yr", label: string) => (
+    <button onClick={() => setValueView(v)} className="min-h-9 rounded-md px-3 text-xs font-medium"
       style={{ background: valueView === v ? "var(--accent-deep)" : "var(--bg)", color: valueView === v ? "white" : "var(--muted)", border: "1px solid var(--border)" }}>{label}</button>
   );
+  const subtotal = (g: SubGroup) => {
+    if (g === "ended") return "not in totals";
+    const v = g === "subs" ? data.monthlyTotal : g === "bills" ? data.billsMonthly : data.transfersMonthly;
+    return `${money(v * k)}/${yr ? "yr" : "mo"}`;
+  };
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Hero — the live-recompute meter */}
+      {/* Hero: the live-recompute meter. Ticking rows below drops it. */}
       <section className="rounded-xl p-4" style={panel}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm" style={{ color: "var(--muted)" }}>
-              Subscriptions {valBtn("mo", "Monthly")}{valBtn("yr", "Annual")}
+              <span>Subscriptions</span>{seg("mo", "Monthly")}{seg("yr", "Annual")}
             </div>
-            <div className="mt-1 flex items-baseline gap-2">
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-2">
               <span className="hero-ember text-3xl font-semibold tracking-tight tabular-nums">{money(heroNow)}</span>
-              <span className="text-sm" style={{ color: "var(--muted)" }}>/{valueView === "mo" ? "mo" : "yr"}</span>
+              <span className="text-sm" style={{ color: "var(--muted)" }}>/{yr ? "yr" : "mo"}</span>
               {picked.size > 0 && <span className="text-sm line-through tabular-nums" style={{ color: "var(--muted)" }}>{money(heroWas)}</span>}
             </div>
             <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-              {data.counts.active} active · next 30 days {money(data.next30Total)}
-              {valueView === "mo" ? <> · {money(data.annualTotal)}/yr</> : <> · {money(data.monthlyTotal)}/mo</>}
+              {data.counts.active} live · next 30 days {money(data.next30Total)}
             </div>
-            {data.obligationsCount > 0 && (
-              <div className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}
-                title="Mortgage, loans, insurance, autopays and transfers — recurring, but not subscriptions you'd cancel. In the Bills tab, excluded from the number above.">
-                + {money(data.obligationsMonthly)}/mo in bills &amp; loans ({data.obligationsCount}) · not counted above
-              </div>
-            )}
-            {data.workMoveCount > 0 && (
-              <button onClick={() => setSeg("work")} className="mt-0.5 block text-left text-xs hover:underline" style={{ color: "var(--warn)" }}
-                title="Subscriptions on your personal card tagged to move to your work card">
-                💼 {data.workMoveCount} tagged for your work card · {money(data.workMoveMonthly)}/mo to move
-              </button>
-            )}
-            {picked.size > 0 && (
-              <div className="mt-1.5 text-sm font-medium" style={{ color: "var(--good)" }}>
-                Cancel {picked.size}: save {money(savingMo)}/mo · {money(savingMo * 12)}/yr
-                <button onClick={() => setPicked(new Set())} className="ml-2 text-xs font-normal underline" style={{ color: "var(--muted)" }}>clear</button>
-              </div>
-            )}
           </div>
-          <button onClick={onRefresh} disabled={refreshing} className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium" style={panel}
-            title="Re-pull recurring streams from Plaid + re-detect from your history">{refreshing ? "Refreshing…" : "↻ Refresh"}</button>
+          <button onClick={onRefresh} disabled={refreshing} className="min-h-11 shrink-0 rounded-lg px-3 text-sm font-medium" style={field}
+            title="Re-pull recurring streams from Plaid and re-detect from your history">{refreshing ? "Refreshing…" : "Refresh"}</button>
         </div>
+        {picked.size > 0 && (
+          <div className="mt-2 flex items-center gap-2 text-sm font-medium" style={{ color: "var(--good)" }}>
+            Cancel {picked.size}: save {money(savingMo)}/mo · {money(savingMo * 12)}/yr
+            <button onClick={() => setPicked(new Set())} className="min-h-9 px-2 text-xs font-normal underline" style={{ color: "var(--muted)" }}>clear</button>
+          </div>
+        )}
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <button onClick={() => setOpen((o) => ({ ...o, bills: true }))} className="min-h-11 rounded-lg px-2.5 py-1.5 text-left" style={{ background: "var(--bg)" }}>
+            <div style={{ color: "var(--muted)" }}>Bills · {data.billsCount}</div>
+            <div className="text-sm font-medium tabular-nums">{money(data.billsMonthly * k)}/{yr ? "yr" : "mo"}</div>
+          </button>
+          <button onClick={() => setOpen((o) => ({ ...o, transfers: true }))} className="min-h-11 rounded-lg px-2.5 py-1.5 text-left" style={{ background: "var(--bg)" }}>
+            <div style={{ color: "var(--muted)" }}>Transfers & savings · {data.transfersCount}</div>
+            <div className="text-sm font-medium tabular-nums">{money(data.transfersMonthly * k)}/{yr ? "yr" : "mo"}</div>
+          </button>
+        </div>
+        {data.workMoveCount > 0 && (
+          <div className="mt-2 text-xs" style={{ color: "var(--warn)" }}>
+            {data.workMoveCount} tagged for your work card · {money(data.workMoveMonthly)}/mo to move
+          </div>
+        )}
       </section>
 
-      {/* Action row: AI + add */}
+      {/* Actions */}
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={buildPlan} disabled={planBusy} className="rounded-lg px-3 py-1.5 text-sm font-semibold" style={{ background: "var(--accent-deep)", color: "white", opacity: planBusy ? 0.6 : 1 }}
-          title="Synthesize unused, price hikes, overlaps and trials into one ranked cancel list">{planBusy ? "Building plan…" : "✨ What to cut"}</button>
-        <button onClick={classify} disabled={classifying} className="rounded-lg px-3 py-1.5 text-sm font-medium" style={{ ...panel, color: "var(--accent)", opacity: classifying ? 0.6 : 1 }}
-          title="Local model sorts the unknown ones into subscription / membership / bill">{classifying ? "Classifying…" : "✨ Classify"}</button>
-        <button onClick={findOverlaps} disabled={olBusy} className="rounded-lg px-3 py-1.5 text-sm font-medium" style={{ ...panel, color: "var(--accent)", opacity: olBusy ? 0.6 : 1 }}
-          title="Find redundant services you could consolidate">{olBusy ? "Looking…" : "⧉ Find overlaps"}</button>
+        <button onClick={buildPlan} disabled={planBusy} className="min-h-11 rounded-lg px-3 text-sm font-semibold" style={{ background: "var(--accent-deep)", color: "white", opacity: planBusy ? 0.6 : 1 }}
+          title="Overlaps, price rises and trials in one ranked cancel list">{planBusy ? "Building plan…" : "What to cut"}</button>
+        <button onClick={findOverlaps} disabled={olBusy} className="min-h-11 rounded-lg px-3 text-sm font-medium" style={{ ...panel, color: "var(--accent)", opacity: olBusy ? 0.6 : 1 }}>
+          {olBusy ? "Looking…" : `Overlaps${data.counts.overlaps ? ` ${data.counts.overlaps}` : ""}`}</button>
+        {data.counts.unlabelled > 0 && (
+          <button onClick={classify} disabled={classifying} className="min-h-11 rounded-lg px-3 text-sm font-medium" style={{ ...panel, color: "var(--accent)", opacity: classifying ? 0.6 : 1 }}
+            title="The model labels the rows the rules could not">{classifying ? "Labelling…" : `Label ${data.counts.unlabelled}`}</button>
+        )}
         <AddSubscription entityQ={entityQ} onAdded={reload} />
         {classifyMsg && <span className="text-xs" style={{ color: "var(--muted)" }}>{classifyMsg}</span>}
       </div>
 
-      {/* Cut plan — the synthesized "what to cut" recommendation. Ticking a row
-          flows into the what-if meter in the hero (shared `picked` set). */}
+      {/* Possible duplicates: one tap merges, one tap says they differ. */}
+      {dups.length > 0 && (
+        <section className="overflow-hidden rounded-xl" style={panel}>
+          <div className="px-3 pt-3 text-sm font-semibold">Same service twice?</div>
+          {dups.slice(0, 4).map((s) => (
+            <div key={s.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+              <button onClick={() => onSub(s.id)} className="min-h-11 min-w-0 flex-1 text-left text-sm">
+                <span className="font-medium">{s.displayName}</span>
+                <span style={{ color: "var(--muted)" }}> looks like {s.possibleDupOf!.merchant}{entityOf.get(s.possibleDupOf!.id) !== s.entity ? ` (${s.entity} vs ${entityOf.get(s.possibleDupOf!.id)})` : ""}</span>
+              </button>
+              <button onClick={() => merge(s.id, s.possibleDupOf!.id)} className="min-h-11 rounded-lg px-3 text-sm font-medium" style={{ background: "var(--accent-deep)", color: "white" }}>Merge</button>
+              <button onClick={() => notDup(s.id)} className="min-h-11 rounded-lg px-3 text-sm" style={field}>Different</button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {/* Cut plan: ticking a row flows into the hero meter (shared `picked`). */}
       {plan && (
-        <section className="rounded-xl overflow-hidden" style={panel}>
+        <section className="overflow-hidden rounded-xl" style={panel}>
           <div className="flex flex-wrap items-center justify-between gap-2 p-3" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="min-w-0">
-              <div className="text-sm font-semibold">✨ What to cut</div>
+              <div className="text-sm font-semibold">What to cut</div>
               <div className="text-xs" style={{ color: "var(--muted)" }}>
                 {plan.headline}{!plan.aiUsed && plan.items.length > 0 ? " · model offline, rule-based" : ""}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {plan.items.length > 0 && (
-                <button onClick={tickAllPlan} className="rounded-md px-2.5 py-1 text-xs font-medium" style={{ background: "var(--bg)", color: "var(--good)", border: "1px solid var(--border)" }}
-                  title="Add every row to the what-if meter">Tick all</button>
+                <button onClick={tickAllPlan} className="min-h-11 rounded-lg px-3 text-xs font-medium" style={{ ...field, color: "var(--good)" }}>Tick all</button>
               )}
-              <button onClick={() => setPlan(null)} className="text-xs" style={{ color: "var(--muted)" }}>close</button>
+              <button onClick={() => setPlan(null)} className="min-h-11 px-2 text-xs" style={{ color: "var(--muted)" }}>close</button>
             </div>
           </div>
           {plan.items.length === 0 && (
-            <div className="p-4 text-center text-sm" style={{ color: "var(--muted)" }}>Nothing obvious to cut — your subscriptions look trimmed.</div>
+            <div className="p-4 text-center text-sm" style={{ color: "var(--muted)" }}>Nothing obvious to cut. Your subscriptions look trimmed.</div>
           )}
           {plan.items.map((it, i) => {
             const on = picked.has(it.id);
             return (
-              <div key={it.id} className="flex flex-wrap items-center gap-2 p-3" style={{ borderTop: i ? "1px solid var(--border)" : undefined, opacity: on ? 1 : 0.92 }}>
-                <input type="checkbox" checked={on} onChange={() => toggle(it.id)} title="What if I cancel this?" className="shrink-0" style={{ accentColor: "var(--accent)" }} />
-                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: "var(--bg)", color: KIND_COLOR[it.kind] }}>{KIND_LABEL[it.kind]}</span>
-                <button onClick={() => onSub(it.id)} className="min-w-0 flex-1 text-left font-medium hover:underline" title="Subscription detail — incl. how to cancel">{it.merchant}</button>
-                <span className="min-w-0 basis-full truncate pl-6 text-xs sm:basis-auto sm:pl-0" style={{ color: "var(--muted)" }} title={it.reason}>{it.reason}</span>
-                <span className="ml-auto shrink-0 text-sm tabular-nums" style={{ color: on ? "var(--good)" : "var(--text)" }}>{money(it.monthly)}/mo</span>
-                <button onClick={() => { const f = subs.find((x) => x.id === it.id); if (f) toggleBill(f); }} className="shrink-0 rounded px-1.5 leading-none"
-                  title="Not a subscription — it's a bill (move to Bills, drop from this plan)" style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--muted)" }}>🧾</button>
+              <div key={it.id} className="flex items-center gap-1 pr-3" style={{ borderTop: i ? "1px solid var(--border)" : undefined }}>
+                <label className="flex h-14 w-11 shrink-0 cursor-pointer items-center justify-center">
+                  <input type="checkbox" checked={on} onChange={() => toggle(it.id)} className="h-5 w-5" style={{ accentColor: "var(--accent)" }} aria-label={`What if I cancel ${it.merchant}`} />
+                </label>
+                <button onClick={() => onSub(it.id)} className="min-h-14 min-w-0 flex-1 py-2 text-left">
+                  <span className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate font-medium">{it.merchant}</span>
+                    <span className="shrink-0 text-sm tabular-nums" style={{ color: on ? "var(--good)" : "var(--text)" }}>{money(it.monthly)}/mo</span>
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-1.5 text-xs" style={{ color: "var(--muted)" }}>
+                    <span className="shrink-0 rounded px-1.5 py-px text-[11px] font-medium" style={{ background: "var(--bg)", color: KIND_COLOR[it.kind] }}>{KIND_LABEL[it.kind]}</span>
+                    <span className="truncate">{it.reason}</span>
+                  </span>
+                </button>
+                <button onClick={() => toggleBill(it.id)} className="min-h-11 shrink-0 rounded-lg px-2 text-xs" style={field}
+                  title="Not a subscription: file it as a bill and drop it from this plan">Bill</button>
               </div>
             );
           })}
-          {plan.items.length > 0 && (
-            <div className="p-3 text-xs" style={{ borderTop: "1px solid var(--border)", color: "var(--muted)" }}>
-              Tick rows to see the savings land in the meter up top, then open a row for one-tap ✨ cancel steps.
-            </div>
-          )}
         </section>
       )}
 
       {/* Overlaps panel */}
       {overlaps && (
-        <section className="rounded-xl overflow-hidden" style={panel}>
+        <section className="overflow-hidden rounded-xl" style={panel}>
           <div className="flex items-center justify-between p-3 text-sm font-semibold" style={{ borderBottom: "1px solid var(--border)" }}>
-            <span>⧉ Overlapping services</span>
-            <button onClick={() => setOverlaps(null)} className="text-xs font-normal" style={{ color: "var(--muted)" }}>close</button>
+            <span>Overlapping services</span>
+            <button onClick={() => setOverlaps(null)} className="min-h-11 px-2 text-xs font-normal" style={{ color: "var(--muted)" }}>close</button>
           </div>
           {overlaps.length === 0 && <div className="p-4 text-center text-sm" style={{ color: "var(--muted)" }}>No obvious overlaps. Nicely consolidated.</div>}
           {overlaps.map((g, i) => (
@@ -442,7 +571,7 @@ export function Subscriptions({
               </div>
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {g.members.map((m) => (
-                  <button key={m.id} onClick={() => onSub(m.id)} className="rounded px-1.5 py-0.5 text-xs hover:underline" style={{ background: "var(--bg)", color: "var(--text)" }}>{m.merchant} {money(m.monthly)}</button>
+                  <button key={m.id} onClick={() => onSub(m.id)} className="min-h-9 rounded px-2 text-xs" style={{ background: "var(--bg)", color: "var(--text)" }}>{m.merchant} {money(m.monthly)}</button>
                 ))}
               </div>
               {g.note && <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>{g.note}</div>}
@@ -451,92 +580,45 @@ export function Subscriptions({
         </section>
       )}
 
-      {/* Insight strip */}
-      {strip.length > 0 && (
-        <section className="rounded-xl overflow-hidden" style={panel}>
-          <div className="p-3 text-sm font-semibold" style={{ borderBottom: "1px solid var(--border)" }}>💡 What to know</div>
-          {strip.slice(0, 5).map((c, i) => (
-            <div key={i} className="flex items-center gap-2 p-3 text-sm" style={{ borderTop: i ? "1px solid var(--border)" : undefined }}>
-              <span style={{ color: c.color, width: 16, textAlign: "center", flexShrink: 0 }}>{c.icon}</span>
-              {c.id ? <button onClick={() => onSub(c.id!)} className="min-w-0 flex-1 truncate text-left hover:underline" title={c.text}>{c.text}</button>
-                : <span className="min-w-0 flex-1 truncate" title={c.text}>{c.text}</span>}
-            </div>
-          ))}
-        </section>
-      )}
-
-      {/* Category donut */}
-      {data.byCategory.length > 0 && (
-        <section className="rounded-xl p-4" style={panel}>
-          <div className="mb-2 text-sm font-medium">By category <span style={{ color: "var(--muted)" }}>· monthly equivalent</span></div>
-          <CategoryDonut slices={data.byCategory} total={data.monthlyTotal} />
-        </section>
-      )}
-
       {/* View toggle: List · Calendar */}
       <div className="flex items-center gap-1.5">
-        {([["list", "List"], ["calendar", "Calendar"]] as ["list" | "calendar", string][]).map(([k, label]) => (
-          <button key={k} onClick={() => setPane(k)} className="rounded-md px-3 py-1.5 text-sm font-medium"
-            style={{ background: pane === k ? "var(--accent-deep)" : "var(--panel)", color: pane === k ? "white" : "var(--text)", border: "1px solid var(--border)" }}>{label}</button>
+        {([["list", "List"], ["calendar", "Calendar"]] as ["list" | "calendar", string][]).map(([key, label]) => (
+          <button key={key} onClick={() => setPane(key)} className="min-h-11 rounded-md px-4 text-sm font-medium"
+            style={{ background: pane === key ? "var(--accent-deep)" : "var(--panel)", color: pane === key ? "white" : "var(--text)", border: "1px solid var(--border)" }}>{label}</button>
         ))}
       </div>
 
       {pane === "calendar" ? (
         <CalendarView subs={subs} />
+      ) : subs.length === 0 ? (
+        <section className="rounded-xl p-6 text-center" style={{ color: "var(--muted)", ...panel }}>
+          No subscriptions detected yet. Sync to pull recurring charges, or add one with + Add.
+        </section>
       ) : (
         <>
-          {subs.length > 0 && <TableToolbar {...tv.toolbar} placeholder="Search subscriptions…" />}
-          <section className="rounded-xl overflow-hidden" style={panel}>
-            <div className="flex flex-wrap items-center justify-between gap-2 p-3" style={{ borderBottom: "1px solid var(--border)" }}>
-              <div className="flex flex-wrap items-center gap-1.5">
-                {([["subs", `Subscriptions ${data.counts.active}`], ["bills", `Bills ${data.obligationsCount}`], ["work", `→ Work ${data.workMoveCount}`], ["all", "All"]] as [typeof seg, string][]).map(([k, label]) => (
-                  <button key={k} onClick={() => setSeg(k)} className="rounded-md px-2.5 py-1 text-xs font-medium"
-                    style={{ background: seg === k ? "var(--accent-deep)" : "var(--bg)", color: seg === k ? "white" : "var(--muted)", border: "1px solid var(--border)" }}>{label}</button>
+          <TableToolbar {...tv.toolbar} placeholder="Search services…" />
+          {GROUPS.map((g) => {
+            const rows = byGroup(g.key);
+            if (searching && rows.length === 0) return null;
+            return (
+              <GroupSection key={g.key} g={g} rows={rows} open={open[g.key] || (searching && rows.length > 0)}
+                onToggle={() => setOpen((o) => ({ ...o, [g.key]: !o[g.key] }))} subtotal={subtotal(g.key)}>
+                {(pageRows) => pageRows.map((s) => (
+                  <SubRow key={s.id} s={s} color={colorOf(s)} yr={yr} picked={picked.has(s.id)}
+                    onPick={counted(s) ? () => toggle(s.id) : undefined} onOpen={() => onSub(s.id)} />
                 ))}
-              </div>
-              <span className="text-sm" style={{ color: "var(--muted)" }}>
-                {seg === "bills" ? <>{money(data.obligationsMonthly)}/mo</>
-                  : seg === "work" ? <>{money(data.workMoveMonthly)}/mo to move</>
-                  : seg === "all" ? <>{money(data.monthlyTotal + data.obligationsMonthly)}/mo</>
-                  : <>{money(data.monthlyTotal)}/mo across {data.counts.active}</>}
-              </span>
-            </div>
-            {subs.length === 0 && (
-              <div className="p-6 text-center" style={{ color: "var(--muted)" }}>
-                No subscriptions detected yet. Hit Sync to pull recurring charges, or add one with + Add.
-              </div>
-            )}
-            {subs.length > 0 && rows.length === 0 && <div className="p-6 text-center" style={{ color: "var(--muted)" }}>Nothing in this view.</div>}
-            {tv.pageRows.map((s) => {
-              const inactive = !s.isActive || s.state === "cancelled";
-              const dot = s.color || catColor.get(s.category ?? "Uncategorized") || "var(--muted)";
-              return (
-                <div key={s.id} className="flex flex-wrap items-center gap-2 p-3" style={{ borderTop: "1px solid var(--border)", opacity: inactive ? 0.65 : 1 }}>
-                  <input type="checkbox" checked={picked.has(s.id)} onChange={() => toggle(s.id)} title="What if I cancel this?" className="shrink-0" style={{ accentColor: "var(--accent)" }} />
-                  {s.icon ? <span className="shrink-0 text-sm leading-none">{s.icon}</span> : <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: dot }} />}
-                  <button onClick={() => onSub(s.id)} className="min-w-40 flex-1 text-left font-medium hover:underline"
-                    style={{ textDecoration: inactive ? "line-through" : undefined }} title="Subscription detail">{s.merchant}</button>
-                  {badge(s.cadence)}
-                  {s.category ? <span className="text-xs" style={{ color: "var(--muted)" }}>{prettyCategory(s.category)}</span> : null}
-                  {s.variableAmount ? badge("variable") : null}
-                  {s.state === "trial" ? badge("trial", "var(--warn)") : null}
-                  {s.priceChange > 1 ? badge(`↗ ${money(s.priceChange)}`, "var(--warn-strong)") : null}
-                  {inactive ? badge("inactive") : <span className="text-xs" style={{ color: "var(--muted)" }}>next {s.nextExpected ?? "—"}</span>}
-                  {s.workMove === "moved" ? badge("✓ work") : null}
-                  <span className="text-sm tabular-nums" style={{ minWidth: 90, textAlign: "right" }}>{money(s.monthly)}/mo</span>
-                  <button onClick={() => toggleBill(s)} className="shrink-0 rounded px-1.5 leading-none"
-                    title={s.type === "obligation" ? "Filed as a bill — tap to make it a subscription again" : "Not a subscription? Mark it a bill (moves to Bills, out of the hero)"}
-                    style={{ border: "1px solid var(--border)", background: s.type === "obligation" ? "var(--info-bg)" : "var(--bg)", color: s.type === "obligation" ? "#000" : "var(--muted)" }}>🧾</button>
-                  <button onClick={() => toggleWork(s)} className="shrink-0 rounded px-1.5 leading-none"
-                    title={s.workMove === "pending" ? "Tagged to move to your work card — tap to untag" : "Tag to move to your work card"}
-                    style={{ border: "1px solid var(--border)", background: s.workMove === "pending" ? "var(--warn-bg)" : "var(--bg)", color: s.workMove === "pending" ? "#000" : "var(--muted)" }}>💼</button>
-                  <button onClick={() => dismiss(s.id)} className="shrink-0 rounded px-1.5 leading-none" style={{ color: "var(--muted)", border: "1px solid var(--border)" }} title="Not a subscription / hide" aria-label="Dismiss">×</button>
-                </div>
-              );
-            })}
-            <Pager {...tv.pager} />
-          </section>
+              </GroupSection>
+            );
+          })}
         </>
+      )}
+
+      {/* By service group: where the subscription money goes */}
+      {pane === "list" && data.byCategory.length > 0 && (
+        <section className="rounded-xl p-4" style={panel}>
+          <div className="mb-2 text-sm font-medium">By service <span style={{ color: "var(--muted)" }}>· monthly</span></div>
+          <CategoryDonut slices={data.byCategory} total={data.monthlyTotal} />
+        </section>
       )}
     </div>
   );
