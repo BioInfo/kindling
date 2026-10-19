@@ -101,4 +101,31 @@ d.prepare(`INSERT INTO transactions (id, account_id, date, name, amount, pending
 applyLoanPaydowns();
 ok("pending loan payment not applied", getAsset(loan)?.value === 10000, String(getAsset(loan)?.value));
 
+// 7. Partial relink merge: the old item has a twin account plus an unpaired $0
+//    account with history. After the merge, the next sync must not bring the
+//    merged account back (it did while the old item stayed alive).
+const { mergeRelinkedItem } = await import("../lib/relink.ts");
+const { computeNetWorth } = await import("../lib/networth.ts");
+const acct2 = (id: string, mask: string, bal: number) => ({ ...acct, account_id: id, name: id, mask, balances: { current: bal, available: bal, iso_currency_code: "USD" } });
+const byToken: Record<string, object[]> = {
+  "tok-old": [acct2("OLD_CHK", "9999", 1000), acct2("OLD_CLOSED", "8888", 0)],
+  "tok-new": [acct2("NEW_CHK", "9999", 1000)],
+  "access-sandbox-x": [acct],
+};
+p.transactionsSync = async (req: { access_token: string }) =>
+  ({ data: { added: [], modified: [], removed: [], accounts: byToken[req.access_token] ?? [], has_more: false, next_cursor: "z" } });
+const insA = d.prepare(`INSERT INTO accounts (id, item_id, name, mask, type, subtype, current_balance) VALUES (?, ?, ?, ?, 'depository', 'checking', ?)`);
+d.prepare(`INSERT INTO items (id, institution, access_token, status, created_at) VALUES ('IOLD', 'ins_2', ?, 'good', '2026-01-01 00:00:00')`).run(encrypt("tok-old"));
+insA.run("OLD_CHK", "IOLD", "OLD_CHK", "9999", 1000); insA.run("OLD_CLOSED", "IOLD", "OLD_CLOSED", "8888", 0);
+d.prepare(`INSERT INTO transactions (id, account_id, date, name, amount) VALUES ('H1', 'OLD_CLOSED', '2025-06-01', 'OLD', 10)`).run();
+d.prepare(`INSERT INTO items (id, institution, access_token, status) VALUES ('INEW', 'ins_2', ?, 'good')`).run(encrypt("tok-new"));
+insA.run("NEW_CHK", "INEW", "NEW_CHK", "9999", 1000);
+await mergeRelinkedItem("INEW", { removeAtPlaid: false });
+const nwMerged = computeNetWorth().net;
+await syncAllItems();
+const nwSynced = computeNetWorth().net;
+ok("partial merge: next sync does not double net worth", nwSynced === nwMerged, `merged=${nwMerged} synced=${nwSynced}`);
+ok("partial merge: merged account stays gone", !d.prepare(`SELECT 1 FROM accounts WHERE id = 'OLD_CHK'`).get());
+ok("partial merge: unpaired history kept", !!row("H1"));
+
 console.log(process.exitCode ? "\nSOME CHECKS FAILED" : "\nALL CHECKS PASSED");
