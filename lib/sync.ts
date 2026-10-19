@@ -7,7 +7,7 @@ import { captureSnapshot } from "./networth";
 import { syncHoldings } from "./holdings";
 import { refreshEquityQuotes } from "./equity";
 import { reconcileSubscriptions } from "./subscriptions";
-import { dedupeMergedTransactions } from "./relink";
+import { dedupeMergedTransactions, absorbById } from "./relink";
 import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 
 // Pulls new/modified/removed transactions for every Item via the cursor-based
@@ -33,24 +33,45 @@ export async function syncAllItems() {
     let hasMore = true;
 
     try {
+      // Plaid: a paginated update is only valid as a whole. Buffer every page and
+      // write once has_more is false; on MUTATION_DURING_PAGINATION restart from
+      // the saved cursor. A failed update stores nothing and keeps the cursor.
+      let upd = { added: [] as Transaction[], modified: [] as Transaction[], removed: [] as RemovedTransaction[], accounts: [] as AccountBase[] };
+      let restarts = 0;
       while (hasMore) {
-        const res = await plaid.transactionsSync({
-          access_token: accessToken,
-          cursor,
-          count: 500,
-        });
-        const data = res.data;
-        for (const t of data.added) { upsertTxn(t); added++; }
-        for (const t of data.modified) { upsertTxn(t); modified++; }
-        for (const t of data.removed) { removeTxn(t); removed++; }
-        // /transactions/sync returns current balances too — refresh them so net
-        // worth tracks reality, not just the snapshot taken at link time.
-        for (const a of data.accounts) upsertAccount(item.id, a);
+        let data;
+        try {
+          data = (await plaid.transactionsSync({ access_token: accessToken, cursor, count: 500 })).data;
+        } catch (e) {
+          if (classifyPlaidError(e).code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" && restarts++ < 3) {
+            cursor = item.cursor ?? undefined;
+            upd = { added: [], modified: [], removed: [], accounts: [] };
+            continue;
+          }
+          throw e;
+        }
+        upd.added.push(...data.added); upd.modified.push(...data.modified); upd.removed.push(...data.removed);
+        upd.accounts = data.accounts;
         cursor = data.next_cursor;
         hasMore = data.has_more;
       }
-      d.prepare(`UPDATE items SET cursor=?, status='good', error=NULL, last_synced_at=datetime('now') WHERE id=?`)
-        .run(cursor ?? null, item.id);
+      d.exec("BEGIN");
+      try {
+        // Accounts first: a txn on an account added since link (update mode) would
+        // otherwise fail its FK and wedge this item on every retry. Balances come
+        // back on /transactions/sync too, so net worth tracks reality.
+        for (const a of upd.accounts) upsertAccount(item.id, a);
+        for (const t of upd.added) { upsertTxn(t); added++; }
+        for (const t of upd.modified) { upsertTxn(t); modified++; }
+        for (const t of upd.removed) { removeTxn(t); removed++; }
+        d.prepare(`UPDATE items SET cursor=?, status='good', error=NULL, last_synced_at=datetime('now') WHERE id=?`)
+          .run(cursor ?? null, item.id);
+        d.exec("COMMIT");
+      } catch (e) {
+        d.exec("ROLLBACK");
+        added = modified = removed = 0;
+        throw e;
+      }
     } catch (e: unknown) {
       const { status, message } = classifyPlaidError(e);
       d.prepare(`UPDATE items SET status=?, error=? WHERE id=?`).run(status, message, item.id);
@@ -117,7 +138,11 @@ function upsertTxn(t: Transaction) {
         @plaid_category, @plaid_detailed, @category, @category_source, @confidence, @entity, @raw)
      ON CONFLICT(id) DO UPDATE SET
         amount=excluded.amount, pending=excluded.pending, date=excluded.date,
-        merchant=excluded.merchant, plaid_category=excluded.plaid_category,
+        -- Only refresh a merchant that is still Plaid's own name; a hand edit sticks.
+        merchant=CASE WHEN transactions.merchant IS NULL
+                        OR transactions.merchant IS json_extract(transactions.raw, '$.merchant_name')
+                      THEN excluded.merchant ELSE transactions.merchant END,
+        plaid_category=excluded.plaid_category,
         plaid_detailed=excluded.plaid_detailed, raw=excluded.raw`
   ).run({
     id: t.transaction_id,
@@ -138,6 +163,9 @@ function upsertTxn(t: Transaction) {
     entity: ruled.entity ?? "personal",
     raw: JSON.stringify(t),
   });
+  // Posted copy of a pending txn: carry the user's category/entity/note over
+  // before the pending row is removed (removals apply after adds).
+  if (t.pending_transaction_id) absorbById(t.pending_transaction_id, t.transaction_id);
 }
 
 function removeTxn(t: RemovedTransaction) {
