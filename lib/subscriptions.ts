@@ -676,7 +676,8 @@ function cycleStats(txns: SubMemberTxn[], interval: number) {
   const sd = Math.sqrt(amts.reduce((a, x) => a + (x - mean) ** 2, 0) / amts.length);
   const variable = amts.length >= 3 && mean > 0 && sd / mean > 0.25;
   let lastChange: { date: string; from: number; to: number } | null = null;
-  if (!variable) {
+  // Two cycles cannot tell a price change from usage; a change needs three.
+  if (!variable && history.length >= 3) {
     for (let i = history.length - 1; i > 0; i--) {
       const a = history[i - 1].amount, b = history[i].amount;
       if (Math.abs(b - a) > Math.max(0.5, a * 0.02)) { lastChange = { date: history[i].date, from: a, to: b }; break; }
