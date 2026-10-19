@@ -301,9 +301,10 @@ export function applyEdit(ids: string[], changes: Partial<Record<EditableField, 
   if (!ids.length || !Object.keys(changes).length) return { updated: 0 };
   const sets: string[] = [];
   const args: (string | number)[] = [];
-  if (changes.category !== undefined) { sets.push("category=?", "category_source='manual'", "confidence=1.0"); args.push(String(changes.category)); }
-  if (changes.entity !== undefined) { sets.push("entity=?"); args.push(String(changes.entity)); }
-  if (changes.merchant !== undefined) { sets.push("merchant=?"); args.push(String(changes.merchant)); }
+  // The body comes back from the client, so re-apply proposeEdit's whitelist here.
+  if (changes.category !== undefined && (CATEGORIES as readonly string[]).includes(String(changes.category))) { sets.push("category=?", "category_source='manual'", "confidence=1.0"); args.push(String(changes.category)); }
+  if (changes.entity === "personal" || changes.entity === "business") { sets.push("entity=?"); args.push(changes.entity); }
+  if (typeof changes.merchant === "string" && changes.merchant.trim()) { sets.push("merchant=?"); args.push(changes.merchant.trim()); }
   if (changes.reviewed !== undefined) { sets.push("reviewed=?"); args.push(changes.reviewed ? 1 : 0); }
   if (!sets.length) return { updated: 0 };
 
