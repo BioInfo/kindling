@@ -82,11 +82,14 @@ export function MerchantModal({
 
   // (c) apply name (and optionally re-file category) to ALL of this merchant's txns.
   const catChanged = cat && cat !== origCat;
-  const dirty = (displayName.trim() && displayName.trim() !== name) || catChanged;
+  // After an apply the modal re-keys to the new name, so compare against the
+  // loaded merchant, not the prop it was opened with.
+  const key = d?.name ?? name;
+  const dirty = (displayName.trim() && displayName.trim() !== key) || catChanged;
   const apply = async () => {
     if (!dirty) return;
     setApplying(true);
-    const body: Record<string, unknown> = { name, rename: displayName.trim() || name };
+    const body: Record<string, unknown> = { name: key, rename: displayName.trim() || key };
     if (catChanged) body.category = cat;
     const res = await fetch("/api/merchants", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePlaidLink } from "react-plaid-link";
 import { panel, money, prettyCategory, CategorySelect, EntityToggle, Sparkline, sortFilter, useTableView, TableToolbar, Pager, ThemeToggle, type Txn } from "./ui";
 import { CATEGORIES } from "@/lib/taxonomy";
@@ -181,7 +181,11 @@ export default function Home() {
   }, [entity]);
 
   // The full Transactions-tab feed: server-side search / sort / filter + pagination.
+  // Filters change faster than the route answers, so only the newest request may
+  // write state; an older response landing late would show the wrong page.
+  const feedSeq = useRef(0);
   const loadFeed = useCallback(async () => {
+    const seq = ++feedSeq.current;
     const p = new URLSearchParams();
     p.set("limit", String(PAGE_SIZE)); p.set("offset", String(page * PAGE_SIZE));
     if (entity !== "all") p.set("entity", entity);
@@ -191,6 +195,7 @@ export default function Home() {
     if (feedSort !== "date") p.set("sort", feedSort);
     if (feedDir !== "desc") p.set("dir", feedDir);
     const r = await fetch(`/api/transactions?${p.toString()}`).then((x) => x.json());
+    if (seq !== feedSeq.current) return;
     setTxns(r.txns ?? []); setTotal(r.total ?? 0);
     setAccounts(r.accounts ?? []); setNetWorth(r.netWorth ?? 0); setReviewCount(r.reviewCount ?? 0);
   }, [entity, page, PAGE_SIZE, feedQDeb, feedCat, feedAcct, feedSort, feedDir]);
@@ -322,10 +327,13 @@ export default function Home() {
     const patch = (t: Txn) => (ids.has(t.id) ? { ...t, category, category_source: "rule" } : t);
     setTxns((prev) => prev.map(patch));
     setReviewRows((prev) => prev.map(patch));
+    setOvTxns((prev) => prev.map(patch));
   };
-  const editTxn = (rows: Txn[], setRows: (t: Txn[]) => void) =>
+  // Functional update: suggestTxn calls this after an await, when `rows` is a
+  // stale snapshot (rows marked reviewed meanwhile would come back).
+  const editTxn = (_rows: Txn[], setRows: React.Dispatch<React.SetStateAction<Txn[]>>) =>
     async (id: string, field: "category" | "entity", val: string) => {
-      setRows(rows.map((t) => (t.id === id ? { ...t, [field]: val } : t)));
+      setRows((prev) => prev.map((t) => (t.id === id ? { ...t, [field]: val } : t)));
       const res = await patchTxn(id, { [field]: val });
       const prop = res?.propagation as PropagationUndo | null | undefined;
       if (field === "category" && prop) {
@@ -343,8 +351,8 @@ export default function Home() {
     if (tab === "transactions") { await loadReview(); await loadFeed(); }
   };
   const markReviewed = async (id: string) => {
-    setReviewRows(reviewRows.filter((t) => t.id !== id));
-    setReviewCount(Math.max(0, reviewCount - 1));
+    setReviewRows((prev) => prev.filter((t) => t.id !== id));
+    setReviewCount((n) => Math.max(0, n - 1));
     await patchTxn(id, { reviewed: true });
   };
   // One-tap AI suggestion for a To-Review row → applies via the normal edit path
@@ -764,6 +772,11 @@ function NetWorthPanel({ nw, onExpand }: { nw: NetWorthData; onExpand?: () => vo
   const change = nw.change;
   const up = change >= 0;
   const linked = nw.linkedExcluded ?? 0;
+  // Snapshots are not daily (days without a visit/sync have no point), so the
+  // window is the span between the first and last dates, not series.length.
+  const spanDays = series.length > 1
+    ? Math.round((Date.parse(series[series.length - 1].date) - Date.parse(series[0].date)) / 86_400_000)
+    : 0;
   const assets = nw.byType.filter((t) => t.side === "asset");
   const liabs = nw.byType.filter((t) => t.side === "liability");
   return (
@@ -777,7 +790,7 @@ function NetWorthPanel({ nw, onExpand }: { nw: NetWorthData; onExpand?: () => vo
           </button>
           {series.length > 1 && (
             <div className="mt-1 text-xs" style={{ color: up ? "var(--good)" : "var(--bad)" }}>
-              {up ? "▲" : "▼"} {money(Math.abs(change))} over {series.length} days
+              {up ? "▲" : "▼"} {money(Math.abs(change))} over {spanDays} days
             </div>
           )}
           {Math.abs(linked) >= 1 && (
@@ -836,8 +849,8 @@ function TxnTable({
         {rows.map((t) => (
           <div key={t.id} className="p-3" style={{ borderTop: "1px solid var(--border)" }}>
             <div className="flex items-center gap-2">
-              <button onClick={() => onIdentify(t)} title="AI-identify this merchant from the web"
-                className="shrink-0 text-xs" style={{ color: "var(--accent)" }}>✨</button>
+              <button onClick={() => onIdentify(t)} title="AI-identify this merchant from the web" aria-label="AI-identify merchant"
+                className="-my-2 -ml-2 shrink-0 p-2 text-xs" style={{ color: "var(--accent)" }}>✨</button>
               <button type="button" onClick={() => onMerchant(t.merchant ?? t.name)} className="min-w-0 flex-1 truncate text-left hover:underline"
                 title="Merchant details + edit">{t.merchant ?? t.name}</button>
               <span className="shrink-0 tabular-nums" style={{ color: t.amount > 0 ? "var(--text)" : "var(--good)" }}>{money(-t.amount, t.currency ?? "USD")}</span>
@@ -933,10 +946,10 @@ function RulesPanel({ rules, reload }: { rules: Rule[]; reload: () => void }) {
       )}
       {rules.length === 0 && <div className="p-6 text-center" style={{ color: "var(--muted)" }}>No rules yet. The AI writes some automatically; add your own above.</div>}
       {rv.pageRows.map((r) => (
-        <div key={r.id} className="flex items-center gap-2 p-3 text-sm" style={{ borderTop: "1px solid var(--border)" }}>
+        <div key={r.id} className="flex flex-wrap items-center gap-2 p-3 text-sm" style={{ borderTop: "1px solid var(--border)" }}>
           <span className="text-xs rounded px-1.5 py-0.5" style={{ background: "var(--bg)", color: "var(--muted)" }}>{r.source}</span>
           <span style={{ color: "var(--muted)" }}>{r.field} {r.match_type}</span>
-          <span className="font-mono">{r.pattern}</span>
+          <span className="break-all font-mono">{r.pattern}</span>
           <span style={{ color: "var(--muted)" }}>→</span>
           <span>{r.category}{r.entity ? ` · ${r.entity}` : ""}{r.rename ? ` · "${r.rename}"` : ""}</span>
           <button onClick={() => del(r.id)} className="ml-auto rounded px-2 py-0.5 text-xs" style={{ background: "var(--bg)", color: "var(--bad)", border: "1px solid var(--border)" }}>delete</button>
