@@ -57,7 +57,49 @@ export function syncConnectionEvents(): void {
     `INSERT INTO connection_events (item_id, date, net_delta, label)
      VALUES (?, ?, ?, ?) ON CONFLICT(item_id) DO NOTHING`
   );
-  for (const r of rows) ins.run(r.item_id, r.date, r.net_delta, r.label);
+  const linkedNow = new Map<string, string>();
+  for (const r of rows) if (ins.run(r.item_id, r.date, r.net_delta, r.label).changes) linkedNow.set(r.item_id, r.date);
+
+  // Per-account: an account first seen after its item's event (added in update
+  // mode, or picked for the first time in a re-link) is visibility too. When the
+  // item event was written just now it already covers the account, so 0.
+  const fresh = d.prepare(
+    `SELECT a.id, a.item_id, COALESCE(i.institution_name, i.institution) AS label,
+       CASE WHEN a.type IN ('credit','loan') THEN -COALESCE(a.current_balance, 0) ELSE COALESCE(a.current_balance, 0) END AS net
+     FROM accounts a JOIN items i ON i.id = a.item_id
+     WHERE NOT EXISTS (SELECT 1 FROM visibility_events v WHERE v.kind = 'account' AND v.account_id = a.id)`
+  ).all() as unknown as { id: string; item_id: string; label: string | null; net: number }[];
+  for (const a of fresh) {
+    const covered = linkedNow.get(a.item_id);
+    setAccountVisibility(a.id, a.item_id, covered ?? today(), covered ? 0 : a.net, a.label);
+  }
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Upsert an account's own visibility step (one row per account).
+export function setAccountVisibility(accountId: string, itemId: string, date: string, net: number, label: string | null = null): void {
+  db().prepare(
+    `INSERT INTO visibility_events (kind, item_id, account_id, date, net_delta, label)
+     VALUES ('account', ?, ?, ?, ?, ?)
+     ON CONFLICT(account_id) WHERE kind = 'account' DO UPDATE SET
+       item_id = excluded.item_id, date = excluded.date, net_delta = excluded.net_delta`
+  ).run(itemId, accountId, date, net, label);
+}
+
+// Every visibility step the trend lifts out: item links, per-account first
+// sightings, removals, corrections, manual assets, equity grants.
+export function visibilityEvents(): { date: string; net_delta: number }[] {
+  return db().prepare(
+    `SELECT date, net_delta FROM connection_events
+     UNION ALL
+     SELECT date, net_delta FROM visibility_events
+     UNION ALL
+     SELECT date(created_at) AS date, added_signed AS net_delta FROM manual_assets
+     UNION ALL
+     SELECT date(created_at) AS date, vested_value_at_add AS net_delta FROM equity_grants
+     ORDER BY date ASC`
+  ).all() as unknown as { date: string; net_delta: number }[];
 }
 
 // Record today's net worth. Idempotent per day — re-running just refreshes today's row.
@@ -93,14 +135,7 @@ export function adjustedTrend(days = 180): Trend {
   // adding a manual asset (house/car/debt). Both lift the prior baseline. A manual
   // asset's later value edits are NOT here (added_signed is frozen), so real
   // appreciation still shows as organic change.
-  const events = (db().prepare(
-    `SELECT date, net_delta FROM connection_events
-     UNION ALL
-     SELECT date(created_at) AS date, added_signed AS net_delta FROM manual_assets
-     UNION ALL
-     SELECT date(created_at) AS date, vested_value_at_add AS net_delta FROM equity_grants
-     ORDER BY date ASC`
-  ).all() as unknown as { date: string; net_delta: number }[]);
+  const events = visibilityEvents();
 
   const series: AdjustedPoint[] = raw.map((s) => {
     // Sum connections strictly after this point — those are visibility gains we

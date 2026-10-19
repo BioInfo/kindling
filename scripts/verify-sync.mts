@@ -128,4 +128,52 @@ ok("partial merge: next sync does not double net worth", nwSynced === nwMerged, 
 ok("partial merge: merged account stays gone", !d.prepare(`SELECT 1 FROM accounts WHERE id = 'OLD_CHK'`).get());
 ok("partial merge: unpaired history kept", !!row("H1"));
 
+// Visibility events (B, C, A). Absent table = old code = FAIL, not a crash.
+const today = new Date().toISOString().slice(0, 10);
+const vis = (where: string, ...args: string[]) => {
+  try { return d.prepare(`SELECT kind, date, net_delta FROM visibility_events WHERE ${where} ORDER BY id`).all(...args) as { kind: string; date: string; net_delta: number }[]; }
+  catch { return []; }
+};
+
+// 8a. An account added to a linked item later (update mode) is visibility, not growth.
+byToken["access-sandbox-x"] = [acct, acct2("A2", "2020", 500)];
+await syncAllItems();
+const a2 = vis("account_id = 'A2' AND kind = 'account'");
+ok("update-mode account: own visibility step", a2.length === 1 && a2[0].net_delta === 500 && a2[0].date === today, JSON.stringify(a2));
+ok("pre-existing account in a new item adds 0", vis("account_id = 'A1' AND kind = 'account'")[0]?.net_delta === 0, JSON.stringify(vis("account_id = 'A1'")));
+
+// 8b. Re-link that also picks a never-linked account: the twin adds nothing, the
+//     first-time account keeps its own step after the new item's event is dropped.
+const { syncConnectionEvents } = await import("../lib/networth.ts");
+d.prepare(`INSERT INTO items (id, institution, access_token, status, created_at) VALUES ('IOLD2', 'ins_3', ?, 'good', '2026-01-01 00:00:00')`).run(encrypt("tok-old2"));
+insA.run("OLD2_CHK", "IOLD2", "OLD2_CHK", "7777", 1000);
+syncConnectionEvents();
+d.prepare(`INSERT INTO items (id, institution, access_token, status) VALUES ('INEW2', 'ins_3', ?, 'good')`).run(encrypt("tok-new2"));
+insA.run("NEW2_CHK", "INEW2", "NEW2_CHK", "7777", 1000); insA.run("NEW2_SAV", "INEW2", "NEW2_SAV", "6666", 300);
+syncConnectionEvents();
+await mergeRelinkedItem("INEW2", { removeAtPlaid: false });
+const sav = vis("account_id = 'NEW2_SAV' AND kind = 'account'");
+ok("re-link: first-time account keeps +300", sav[0]?.net_delta === 300 && sav[0]?.date === today, JSON.stringify(sav));
+ok("re-link: twin account adds 0", vis("account_id = 'NEW2_CHK' AND kind = 'account'")[0]?.net_delta === 0);
+const ev3 = d.prepare(`SELECT date, net_delta FROM connection_events WHERE item_id = 'INEW2'`).get() as { date: string; net_delta: number } | undefined;
+ok("re-link: original link event kept", ev3?.date === "2026-01-01" && ev3?.net_delta === 1000, JSON.stringify(ev3));
+
+// 9. Deleting a manual account is lost visibility, not a loss: for a point inside
+//    its life the lift is -2000 (matches today's level), before its link it is 0.
+const { createManualAccount, deleteManualAccount, updateManualAccount } = await import("../lib/accounts.ts");
+const { account_id: gone } = createManualAccount({ name: "Old 529", subtype: "529", balance: 2000 });
+d.prepare(`UPDATE connection_events SET date = '2026-09-01' WHERE item_id = ?`).run(gone);
+deleteManualAccount(gone);
+const rm = vis("item_id = ? AND kind IN ('link', 'removal')", gone);
+const liftAt = (pt: string) => rm.reduce((s, e) => (e.date > pt ? s + e.net_delta : s), 0);
+ok("delete: link event preserved + removal recorded", rm.length === 2 && liftAt("2026-09-15") === -2000 && liftAt("2026-08-15") === 0, JSON.stringify(rm));
+
+// 10. A manual balance edit flagged as a correction is visibility; unflagged it is growth.
+const { account_id: tsp } = createManualAccount({ name: "TSP", subtype: "tsp", balance: 500000 });
+updateManualAccount(tsp, { balance: 850000, correction: true } as Parameters<typeof updateManualAccount>[1]);
+const corr = vis("item_id = ? AND kind = 'correction'", tsp);
+ok("correction edit records +350000 today", corr.length === 1 && corr[0].net_delta === 350000 && corr[0].date === today, JSON.stringify(corr));
+updateManualAccount(tsp, { balance: 900000 });
+ok("plain edit records nothing", vis("item_id = ? AND kind = 'correction'", tsp).length === 1);
+
 console.log(process.exitCode ? "\nSOME CHECKS FAILED" : "\nALL CHECKS PASSED");
