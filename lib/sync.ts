@@ -138,7 +138,11 @@ function upsertTxn(t: Transaction) {
         @plaid_category, @plaid_detailed, @category, @category_source, @confidence, @entity, @raw)
      ON CONFLICT(id) DO UPDATE SET
         amount=excluded.amount, pending=excluded.pending, date=excluded.date,
-        merchant=excluded.merchant, plaid_category=excluded.plaid_category,
+        -- Only refresh a merchant that is still Plaid's own name; a hand edit sticks.
+        merchant=CASE WHEN transactions.merchant IS NULL
+                        OR transactions.merchant IS json_extract(transactions.raw, '$.merchant_name')
+                      THEN excluded.merchant ELSE transactions.merchant END,
+        plaid_category=excluded.plaid_category,
         plaid_detailed=excluded.plaid_detailed, raw=excluded.raw`
   ).run({
     id: t.transaction_id,
