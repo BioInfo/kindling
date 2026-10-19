@@ -2,8 +2,16 @@
 
 Dated history, newest first. Backlog lives in `ROADMAP.md`; current state in `README.md`.
 
+## 2026-10-19
+- Category fixes from owner review: car loan (HMF/Hyundai) to Loan Payments, Kuranda to Pets, Beacon Electrical to Home, Home Depot to Household, Ro Health to Healthcare. Rules updated so new charges follow.
+
 ## 2026-10-18
 - Fold re-linked Plaid items into one, flag logged-out banks, stop scheduling lapsed recurring charges.
+- Net worth trend is connection-aware per account (visibility events, manual corrections, removals not shown as losses); weekly summary uses adjusted snapshots.
+- Subscriptions split into Subscriptions / Bills / Transfers / Ended, with brand merges, types and per-row detail.
+- Full recategorization with Amazon receipt matching from Gmail; new categories Home, Electronics, Household, Clothing, Pets, Personal Care, Loan Payments.
+- Every sync now categorizes new transactions and reconciles subscriptions with GLM 5.3 (thinking lane for judgment, fast lane for bulk).
+- Security and correctness fixes: chat SQL authorizer, CSV formula injection, rule precedence, paginated To-Review, local (Eastern) dates.
 
 ## 2026-09-19
 - LLM calls send `thinking: {type: disabled}`; reasoning had been consuming the whole token budget.
