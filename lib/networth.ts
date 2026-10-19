@@ -87,6 +87,22 @@ export function setAccountVisibility(accountId: string, itemId: string, date: st
   ).run(itemId, accountId, date, net, label);
 }
 
+// Deleting an item (a manual account, a dropped bank) removes visibility, not
+// wealth. Its link event would cascade away with the item, so keep a copy, and
+// add a negative step today for what the item still held.
+export function recordItemRemoval(itemId: string): void {
+  const d = db();
+  const ev = d.prepare(`SELECT date, net_delta, label FROM connection_events WHERE item_id = ?`).get(itemId) as
+    | { date: string; net_delta: number; label: string | null } | undefined;
+  const held = d.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN type IN ('credit','loan') THEN -current_balance ELSE current_balance END), 0) AS net
+     FROM accounts WHERE item_id = ?`
+  ).get(itemId) as { net: number };
+  const ins = d.prepare(`INSERT INTO visibility_events (kind, item_id, date, net_delta, label) VALUES (?, ?, ?, ?, ?)`);
+  if (ev) ins.run("link", itemId, ev.date, ev.net_delta, ev.label);
+  ins.run("removal", itemId, today(), -held.net, ev?.label ?? null);
+}
+
 // Every visibility step the trend lifts out: item links, per-account first
 // sightings, removals, corrections, manual assets, equity grants.
 export function visibilityEvents(): { date: string; net_delta: number }[] {

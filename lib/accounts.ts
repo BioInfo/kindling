@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db";
-import { syncConnectionEvents } from "./networth";
+import { syncConnectionEvents, recordItemRemoval } from "./networth";
 
 // Manual (held-away) investment accounts — brokerages/retirement Plaid can't link:
 // a 529, military TSP, Coinbase, a small broker. The accounts table is Plaid-shaped
@@ -111,7 +111,9 @@ export function updateManualAccount(id: string, patch: {
 export function deleteManualAccount(id: string): boolean {
   if (!isManual(id)) return false;
   // Deleting the synthetic item cascades to its account, holdings, transactions, and
-  // connection_event (foreign_keys is ON).
+  // connection_event (foreign_keys is ON). Record the removal first so the trend
+  // reads it as lost visibility, not a loss.
+  recordItemRemoval(id);
   db().prepare(`DELETE FROM items WHERE id = ?`).run(id);
   return true;
 }
