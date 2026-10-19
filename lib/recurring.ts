@@ -159,7 +159,10 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
     // in these categories (a delivery pass, a streaming plan filed as
     // Entertainment) repeats an exact price, so require one amount to cover at
     // least half the charges.
-    if (last.category && VISIT_CATS.has(last.category)) {
+    // A store number in the descriptor ("WAWA# 678") marks a visit whatever the
+    // category says (gas filed as Transportation slipped past the category list).
+    const storeVisit = g.some((x) => /#\s?\d{2,}/.test(x.name ?? ""));
+    if (storeVisit || g.some((x) => x.category && VISIT_CATS.has(x.category))) {
       const freq = new Map<string, number>();
       for (const a of amts) freq.set(a.toFixed(2), (freq.get(a.toFixed(2)) ?? 0) + 1);
       if (Math.max(...freq.values()) * 2 < g.length) continue;
