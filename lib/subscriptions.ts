@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { plaid } from "./plaid";
 import { decrypt } from "./crypto";
-import { detectRecurring, norm } from "./recurring";
+import { detectRecurring, isLapsed, norm } from "./recurring";
 import { mapPfc } from "./taxonomy";
 import { chat, extractJson } from "./llm";
 
@@ -402,7 +402,10 @@ function toSub(r: SubRow): Subscription {
     cadence: r.cadence ?? "monthly", intervalDays: r.interval_days ?? 30,
     avgAmount: r.avg_amount, lastAmount: r.last_amount, monthly: r.monthly, count: r.count,
     firstDate: r.first_date, lastDate: r.last_date, nextExpected: r.next_expected,
-    isActive: !!r.is_active, priceChange: r.price_change, variableAmount: !!r.variable_amount,
+    // is_active is only rewritten when detection still finds the stream; a row it
+    // stopped finding (too few charges left in the window, a merchant rename)
+    // would stay "active" forever, so apply the lapse rule to the stored date too.
+    isActive: !!r.is_active && !(r.last_date && isLapsed(r.last_date, r.interval_days ?? 30)), priceChange: r.price_change, variableAmount: !!r.variable_amount,
     state: (r.state as SubState), trialEnds: r.trial_ends, color: r.color, icon: r.icon,
     note: r.note, workMove: r.work_move, source: r.source, plaidStreamId: r.plaid_stream_id,
   };
