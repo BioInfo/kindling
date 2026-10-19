@@ -122,7 +122,7 @@ export function applyLoanPaydowns(): Paydown[] {
     const since = loan.last_paydown_date ?? loan.created;
     const pays = db().prepare(
       `SELECT date, amount FROM transactions
-       WHERE amount > 0 AND date > ?
+       WHERE amount > 0 AND pending = 0 AND date > ?
          AND (name LIKE '%' || ? || '%' OR merchant LIKE '%' || ? || '%')
        ORDER BY date ASC`
     ).all(since, loan.payee_match, loan.payee_match) as unknown as { date: string; amount: number }[];
