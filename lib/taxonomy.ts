@@ -8,6 +8,7 @@ export const CATEGORIES = [
   "CreditCardPayment",
   "Rent",
   "Mortgage",
+  "Home",        // HOA dues, home services and upkeep — not the mortgage itself
   "Utilities",
   "Groceries",
   "Dining",

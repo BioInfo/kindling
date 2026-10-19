@@ -88,15 +88,22 @@ export function gatherStats(): SummaryStats {
   // Vanguard + Fidelity). adjustedTrend lifts the prior baseline by connections
   // that landed after it, so `delta` is organic change only; the visibility step
   // rides separately in `linkedExcluded` for the narrator to flag, never as gain.
+  // Snapshots are sparse (one per sync day), so take the latest adjusted point
+  // on or before each end of the period rather than requiring one inside it; the
+  // old 8-day window from today found none and reported "no prior figure".
   const nwNow = computeNetWorth().net;
-  const trend = adjustedTrend(8);
-  const prior = trend.series.length > 1 ? trend.series[0] : null;
+  const trend = adjustedTrend(Math.max(30, Math.ceil((Date.now() - Date.parse(pStart)) / 86400000) + 14));
+  const atOrBefore = (d: string) => [...trend.series].reverse().find((p) => p.date <= d) ?? null;
+  const prior = atOrBefore(addDays(start, -1));
+  const closing = end >= todayLocal() ? null : atOrBefore(end);
+  const currentNet = closing ? closing.net : trend.series.length ? trend.series[trend.series.length - 1].net : nwNow;
+  const linked = prior ? visibilityEvents().reduce((a, e) => (e.date > prior.date && e.date <= end ? a + e.net_delta : a), 0) : 0;
   const netWorth = {
-    current: round2(nwNow),
+    current: round2(closing ? closing.raw : nwNow),
     prior: prior ? round2(prior.net) : null,
-    delta: prior ? round2(nwNow - prior.net) : null,
+    delta: prior && prior.date !== (closing?.date ?? "") ? round2(currentNet - prior.net) : null,
     priorDate: prior ? prior.date : null,
-    linkedExcluded: round2(trend.linkedExcluded),
+    linkedExcluded: round2(linked),
   };
 
   // A stream that stopped charging is history, not part of the monthly load.
