@@ -52,15 +52,17 @@ function monthsUntil(deadline: string): number {
 }
 
 // Recent monthly savings = inflow − outflow over the last 30 days on depository
-// accounts, excluding internal money movement. Same exclusion set as /spending.
+// and credit-card accounts, excluding internal money movement. Same exclusion set
+// as /spending. Card charges must be in: the card payment that would otherwise
+// carry them is excluded as money movement.
 function recentMonthlySavings(): number {
   const r = db().prepare(
     `SELECT COALESCE(-SUM(t.amount), 0) AS net
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE a.type = 'depository'
+     WHERE a.type IN ('depository','credit')
        AND t.date >= date('now','-30 days')
        AND COALESCE(t.category,'') NOT IN
-         ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment')`
+         ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment','TRANSFER_OUT','TRANSFER_IN')`
   ).get() as { net: number };
   return round2(r.net ?? 0);
 }
@@ -192,15 +194,15 @@ export function suggestGoals(): SuggestGoalsView {
   const has = (n: string) => existing.has(n.toLowerCase());
 
   // 1. Emergency fund = 6 × a ROBUST monthly outflow. Use the median of the last 6
-  // full months' depository outflow (median resists one-time spikes like the April
+  // full months' cash + card outflow (median resists one-time spikes like the April
   // tax payment), excluding internal money movement + lumpy Taxes. Mortgage/loans
   // stay in — they're real monthly obligations an emergency fund must cover.
   const monthRows = db().prepare(
     `SELECT strftime('%Y-%m', t.date) AS ym, SUM(t.amount) AS spent
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE a.type = 'depository' AND t.amount > 0
-       AND t.date >= date('now','-6 months') AND t.date < strftime('%Y-%m-01','now')
-       AND COALESCE(t.category,'') NOT IN ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment','Taxes')
+     WHERE a.type IN ('depository','credit') AND t.amount > 0
+       AND t.date >= date('now','start of month','-6 months') AND t.date < strftime('%Y-%m-01','now')
+       AND COALESCE(t.category,'') NOT IN ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment','Taxes','TRANSFER_OUT')
      GROUP BY ym ORDER BY ym`
   ).all() as { ym: string; spent: number }[];
   const months = monthRows.map((r) => r.spent).sort((a, b) => a - b);
