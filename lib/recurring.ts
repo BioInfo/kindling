@@ -22,7 +22,7 @@ export type Recurring = {
   lapsed: boolean;        // missed two cycles: history, not a future charge (see isLapsed)
 };
 
-type Row = { date: string; merchant: string; amount: number; category: string | null };
+type Row = { date: string; merchant: string; name: string | null; amount: number; category: string | null };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 // Normalize a merchant string for grouping: drop trailing store numbers, strip
@@ -66,18 +66,49 @@ function addDays(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// A real credit-card payoff moves money to a card whose charges are already
+// counted, so it is not a recurring cost. Plaid files some insurance and loan
+// autopays under the same credit-card-payment subtype (USAA P&C AUTOPAY), so the
+// category alone over-drops. A payoff names a card issuer (one of your own
+// credit accounts' institutions, or a known issuer) next to payment wording, or
+// says "credit card" outright; insurance and loan wording never is one.
+const KNOWN_ISSUERS = ["amex", "american express", "chase", "citi", "barclay", "barclaycard", "capital one", "discover", "synchrony"];
+const PAYOFF_EXCLUDE = /p ?& ?c\b|insur|mortgage|\bloan\b|motor fin|auto fin/i;
+const PAY_WORD = /pmt|payment|pymt|autopay|epay|crd/i;
+const CARD_WORD = /credit ?crd|creditcard|credit card|crcardpmt|card ?pmt|card payment/i;
+let issuerCache: { d: unknown; names: string[] } | null = null;
+function issuers(): string[] {
+  const d = db();
+  if (issuerCache?.d === d) return issuerCache.names;
+  const own = (d.prepare(
+    `SELECT DISTINCT LOWER(COALESCE(i.institution_name, '')) AS n FROM accounts a JOIN items i ON i.id = a.item_id WHERE a.type = 'credit'`
+  ).all() as { n: string }[]).map((r) => r.n).filter(Boolean);
+  const names = [...new Set([...KNOWN_ISSUERS, ...own, ...(own.includes("american express") ? ["amex"] : [])])];
+  issuerCache = { d, names };
+  return names;
+}
+export function isCardPayoff(descriptor: string | null | undefined): boolean {
+  const s = (descriptor ?? "").toLowerCase();
+  if (!s || PAYOFF_EXCLUDE.test(s)) return false;
+  if (CARD_WORD.test(s)) return true;
+  const words = ` ${s.replace(/[^a-z0-9& ]/g, " ")} `;
+  return PAY_WORD.test(s) && issuers().some((n) => words.includes(` ${n} `));
+}
+
 export function detectRecurring(opts: { entity?: string | null; minOccurrences?: number } = {}): Recurring[] {
   const minOcc = opts.minOccurrences ?? 3;
-  const where = ["category NOT IN ('Transfer:Internal','CreditCardPayment')", "COALESCE(merchant, name) IS NOT NULL"];
+  // NULL categories stay out, as before (NOT IN dropped them implicitly).
+  const where = ["category IS NOT NULL", "category != 'Transfer:Internal'", "COALESCE(merchant, name) IS NOT NULL"];
   const args: unknown[] = [];
   if (opts.entity) { where.push("entity = ?"); args.push(opts.entity); }
 
-  const rows = db().prepare(
-    `SELECT date, COALESCE(merchant, name) AS merchant, amount, category
+  const rows = (db().prepare(
+    `SELECT date, COALESCE(merchant, name) AS merchant, name, amount, category
      FROM transactions
      WHERE ${where.join(" AND ")} AND date >= date('now','-400 days')
      ORDER BY date ASC`
-  ).all(...(args as never[])) as unknown as Row[];
+  ).all(...(args as never[])) as unknown as Row[])
+    .filter((r) => r.category !== "CreditCardPayment" || !isCardPayoff(r.name ?? r.merchant));
 
   // A stream the user dismissed on the Subscriptions surface ("not recurring")
   // must not come back here and be scheduled by the forecast, digest or alerts.
