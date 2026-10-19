@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { RULE_ORDER, ruleMatches } from "@/lib/categorize";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const rules = db().prepare(
     `SELECT id, match_type, pattern, field, category, entity, rename, priority, source
-     FROM rules ORDER BY priority ASC, id ASC`
+     FROM rules ORDER BY ${RULE_ORDER}`
   ).all();
   return NextResponse.json({ rules });
 }
@@ -35,10 +36,14 @@ export async function POST(req: NextRequest) {
   // Optionally apply the new rule to existing matching transactions right away.
   let applied = 0;
   if (b.applyNow) {
-    const like = `%${String(b.pattern).toLowerCase()}%`;
-    // Same haystack applyRules() uses on sync: a merchant rule falls back to
-    // the name when merchant is empty.
-    const col = b.field === "name" ? "name" : "COALESCE(NULLIF(merchant,''), name)";
+    // Match in JS with the sync matcher, so exact/regex rules apply as written
+    // and % or _ in a pattern are literal. A merchant rule falls back to the
+    // name when merchant is empty, same as applyRules().
+    const rule = { match_type: b.match_type ?? "contains", pattern: String(b.pattern), field: b.field ?? "merchant" };
+    const ids = (d.prepare(`SELECT id, merchant, name FROM transactions`).all() as
+      { id: string; merchant: string | null; name: string | null }[])
+      .filter((t) => ruleMatches(rule, t.merchant, t.name ?? ""))
+      .map((t) => t.id);
     const sets: string[] = [];
     const args: unknown[] = [];
     // A hand-set category (category_source='manual') is never overwritten.
@@ -53,13 +58,12 @@ export async function POST(req: NextRequest) {
     }
     if (b.entity) { sets.push("entity=?"); args.push(b.entity); }
     if (b.rename) { sets.push("merchant=?"); args.push(b.rename); }
-    if (sets.length) {
-      args.push(like);
-      const res = d.prepare(
-        `UPDATE transactions SET ${sets.join(", ")} WHERE lower(${col}) LIKE ?` +
+    if (sets.length && ids.length) {
+      const stmt = d.prepare(
+        `UPDATE transactions SET ${sets.join(", ")} WHERE id=?` +
           (b.entity || b.rename ? "" : ` AND NOT ${manual}`)
-      ).run(...(args as never[]));
-      applied = Number(res.changes ?? 0);
+      );
+      for (const id of ids) applied += Number(stmt.run(...(args as never[]), id).changes ?? 0);
     }
   }
   return NextResponse.json({ ok: true, id: Number(info.lastInsertRowid), applied });

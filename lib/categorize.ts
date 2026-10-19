@@ -66,13 +66,13 @@ export function rememberMerchantCategory(txnId: string, category: string): Propa
   }
 
   // --- Backfill non-manual siblings (don't clobber deliberate hand-sets) ------
-  const like = `%${pattern.toLowerCase()}%`;
+  // instr, not LIKE: a merchant holding % or _ must match literally.
   const haystack = field === "name" ? "lower(name)" : "lower(COALESCE(NULLIF(merchant,''), name))";
   const siblings = d.prepare(
     `SELECT id, category, category_source, confidence FROM transactions
-     WHERE ${haystack} LIKE ? AND id != ? AND COALESCE(category_source,'') != 'manual'
+     WHERE instr(${haystack}, ?) > 0 AND id != ? AND COALESCE(category_source,'') != 'manual'
        AND COALESCE(category,'') != ?`
-  ).all(like, txnId, category) as { id: string; category: string | null; category_source: string | null; confidence: number | null }[];
+  ).all(pattern.toLowerCase(), txnId, category) as { id: string; category: string | null; category_source: string | null; confidence: number | null }[];
 
   const setCat = d.prepare(
     `UPDATE transactions SET category=?, category_source='rule', confidence=1.0 WHERE id=?`
@@ -108,40 +108,51 @@ export function undoRememberMerchant(undo: PropagationUndo): void {
 }
 
 // --- Rule layer (deterministic, user-editable, runs on every sync) ---
-export function applyRules(merchant: string | null, name: string): RuleHit {
-  const d = db();
-  const rules = d
-    .prepare(`SELECT * FROM rules ORDER BY priority ASC, id ASC`)
-    .all() as unknown as {
-    match_type: string;
-    pattern: string;
-    field: string;
-    category: string | null;
-    entity: string | null;
-    rename: string | null;
-  }[];
+export interface RuleRow {
+  match_type: string;
+  pattern: string;
+  field: string;
+  category: string | null;
+  entity: string | null;
+  rename: string | null;
+}
 
+// Precedence: any user rule (source != 'llm') beats any LLM-written rule, then
+// lower priority, then older id. A Rules-panel rule defaults to priority 100 and
+// LLM rules to 50, so priority alone let the model override the user.
+export const RULE_ORDER = `CASE WHEN source='llm' THEN 1 ELSE 0 END, priority ASC, id ASC`;
+
+// The one matcher: sync (applyRules) and the Rules panel's "apply now" both use
+// it, so a rule does the same thing in both places.
+export function ruleMatches(r: Pick<RuleRow, "match_type" | "pattern" | "field">, merchant: string | null, name: string): boolean {
   const merchantText = (merchant ?? "").toLowerCase();
   const nameText = name.toLowerCase();
-
-  for (const r of rules) {
-    const haystack = r.field === "name" ? nameText : merchantText || nameText;
-    const needle = r.pattern.toLowerCase();
-    let matched = false;
-    if (r.match_type === "exact") matched = haystack === needle;
-    else if (r.match_type === "regex") {
-      try { matched = new RegExp(r.pattern, "i").test(haystack); } catch { matched = false; }
-    } else matched = haystack.includes(needle);
-
-    if (matched) {
-      return {
-        category: r.category ?? undefined,
-        entity: r.entity ?? undefined,
-        rename: r.rename ?? undefined,
-      };
-    }
+  const haystack = r.field === "name" ? nameText : merchantText || nameText;
+  const needle = r.pattern.toLowerCase();
+  if (r.match_type === "exact") return haystack === needle;
+  if (r.match_type === "regex") {
+    try { return new RegExp(r.pattern, "i").test(haystack); } catch { return false; }
   }
-  return {};
+  return haystack.includes(needle);
+}
+
+// Merged per field across every matching rule: the highest-precedence rule that
+// sets a field wins that field, so a category rule and a rename rule for the
+// same merchant both apply.
+export function applyRules(merchant: string | null, name: string): RuleHit {
+  const rules = db()
+    .prepare(`SELECT * FROM rules ORDER BY ${RULE_ORDER}`)
+    .all() as unknown as RuleRow[];
+
+  const hit: RuleHit = {};
+  for (const r of rules) {
+    if (!ruleMatches(r, merchant, name)) continue;
+    if (hit.category === undefined && r.category) hit.category = r.category;
+    if (hit.entity === undefined && r.entity) hit.entity = r.entity;
+    if (hit.rename === undefined && r.rename) hit.rename = r.rename;
+    if (hit.category !== undefined && hit.entity !== undefined && hit.rename !== undefined) break;
+  }
+  return hit;
 }
 
 // --- LLM layer (the tail rules don't cover) ---
@@ -191,7 +202,7 @@ export async function categorizeWithLlm(opts: { limit?: number; writeRules?: boo
         { role: "system", content: SYSTEM },
         { role: "user", content: JSON.stringify(payload) },
       ],
-      { maxTokens: 1600 }
+      { maxTokens: 1600, reasoning: false }
     );
     const parsed = extractJson<LlmResult[]>(reply);
     if (!Array.isArray(parsed)) continue;
@@ -249,7 +260,7 @@ export async function suggestCategory(
       { role: "system", content: SYSTEM },
       { role: "user", content: JSON.stringify([{ id: t.id, name: t.name, merchant: t.merchant, plaid: t.plaid }]) },
     ],
-    { maxTokens: 200 },
+    { maxTokens: 200, reasoning: false },
   );
   const parsed = extractJson<{ id: string; category: string; confidence?: number }[]>(reply);
   const hit = Array.isArray(parsed) ? parsed.find((r) => r?.category) : null;
