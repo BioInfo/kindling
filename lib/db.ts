@@ -406,6 +406,33 @@ function migrate(d: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_subs_key ON subscriptions(merchant_key);
   `);
 
+  // Visibility steps beyond an item's link event, with no FK so they outlive the
+  // item: 'account' = an account first seen after its item linked (update mode,
+  // re-link; one row per account, 0 when the item event covers it), 'removal' =
+  // an item deleted, 'link' = the deleted item's preserved link event,
+  // 'correction' = a manual balance edit that fixes the starting figure.
+  // On first creation every existing account is seeded at 0 (already covered by
+  // its item's connection event), so the trend for existing data is unchanged.
+  const hadVis = d.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='visibility_events'`).get();
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS visibility_events (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind        TEXT NOT NULL,             -- account | removal | link | correction
+      item_id     TEXT,
+      account_id  TEXT,
+      date        TEXT NOT NULL,             -- YYYY-MM-DD the step happened
+      net_delta   REAL NOT NULL,             -- signed net it added (removal is negative)
+      label       TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_vis_account ON visibility_events(account_id) WHERE kind = 'account';
+  `);
+  if (!hadVis) {
+    d.exec(`INSERT INTO visibility_events (kind, item_id, account_id, date, net_delta)
+            SELECT 'account', a.item_id, a.id, COALESCE(ce.date, date('now')), 0
+            FROM accounts a LEFT JOIN connection_events ce ON ce.item_id = a.item_id`);
+  }
+
   // node:sqlite has no IF NOT EXISTS for columns, so probe pragma and ALTER once.
   const addCol = (table: string, col: string, decl: string) => {
     const has = (d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col);
