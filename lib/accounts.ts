@@ -84,6 +84,7 @@ export function createManualAccount(input: {
 
 export function updateManualAccount(id: string, patch: {
   name?: string; institution?: string | null; subtype?: string | null; balance?: number | null;
+  correction?: boolean; // the edit fixes the starting figure: visibility, not growth
 }): boolean {
   if (!isManual(id)) return false;
   const d = db();
@@ -101,8 +102,17 @@ export function updateManualAccount(id: string, patch: {
   if (patch.balance !== undefined && Number.isFinite(patch.balance as number)) {
     const hasHoldings = d.prepare(`SELECT 1 FROM holdings WHERE account_id = ?`).get(id);
     if (!hasHoldings) {
+      const before = (d.prepare(`SELECT COALESCE(current_balance, 0) AS b FROM accounts WHERE id = ?`).get(id) as { b: number }).b;
       d.prepare(`UPDATE accounts SET current_balance = ?, updated_at = datetime('now') WHERE id = ?`)
         .run(Number(patch.balance), id);
+      // A correction lifts every earlier point by the difference (a step dated
+      // today), so history reads as if the right figure had been entered at the
+      // start. Moving the link event alone would leave the step between link and today.
+      const diff = Number(patch.balance) - before;
+      if (patch.correction && diff) {
+        d.prepare(`INSERT INTO visibility_events (kind, item_id, account_id, date, net_delta) VALUES ('correction', ?, ?, date('now'), ?)`)
+          .run(id, id, diff);
+      }
     }
   }
   return true;
