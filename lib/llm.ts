@@ -4,6 +4,10 @@ import { config } from "./config";
 // provider). Model is swappable via FINANCE_LLM_MODEL — point it at a model served
 // on your own network if you want financial data to never leave it.
 
+// Thinking tokens bill against max_tokens; this headroom sits on top of the
+// caller's answer budget. GLM 5.3 used ~350 on a small classify, more on prose.
+const REASONING_BUDGET = Number(process.env.LLM_REASONING_BUDGET ?? 12_000);
+
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
   content: string;
@@ -11,8 +15,15 @@ export interface ChatMsg {
 
 export async function chat(
   messages: ChatMsg[],
-  opts: { maxTokens?: number; temperature?: number; model?: string; timeoutMs?: number } = {}
+  opts: { maxTokens?: number; temperature?: number; model?: string; timeoutMs?: number; reasoning?: boolean } = {}
 ): Promise<string> {
+  // Two lanes. Judgment calls (default) run the thinking model with a reasoning
+  // budget added on top of the caller's answer budget, so thinking never eats the
+  // reply. Mechanical batch work passes reasoning:false and gets the thinking-off
+  // alias (a per-request switch drifts by route; the -author alias does not).
+  const reasoning = opts.reasoning ?? true;
+  const model = opts.model ?? (reasoning ? config.llm.model : config.llm.fastModel);
+  const maxTokens = reasoning ? Math.min(32_000, (opts.maxTokens ?? 1024) + REASONING_BUDGET) : opts.maxTokens ?? 1024;
   const res = await fetch(`${config.llm.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -20,11 +31,11 @@ export async function chat(
       Authorization: `Bearer ${config.llm.apiKey}`,
     },
     body: JSON.stringify({
-      model: opts.model ?? config.llm.model,
+      model,
       temperature: opts.temperature ?? 0,
-      max_tokens: opts.maxTokens ?? 1024,
+      max_tokens: maxTokens,
       messages,
-      // Non-reasoning. `thinking: {type:"disabled"}` is the one shape this
+      // Fast lane only. `thinking: {type:"disabled"}` is the one shape this
       // gateway actually honors on deepseek-flash: measured 2026-09-19,
       // reasoning_tokens 0 with it, 131-495 without. `reasoning.enabled=false`
       // and `reasoning_effort:"none"` are BOTH silently ignored here — they
@@ -32,15 +43,16 @@ export async function chat(
       // (OpenRouter reads the reasoning shape); unknown keys are dropped.
       // Reasoning tokens are billed against max_tokens, so an ignored flag
       // spends the whole budget thinking and returns content: null.
-      thinking: { type: "disabled" },
-      reasoning: { enabled: false },
+      ...(reasoning ? {} : { thinking: { type: "disabled" }, reasoning: { enabled: false } }),
     }),
     // Cold-start of the on-demand NVFP4 vLLM can take ~30-60s on first call.
     // Default cap 90s: long enough for a real cold-start, short enough to fail
     // cleanly when the model is down rather than hanging the UI. An explicit
     // timeoutMs overrides it — out-of-band callers (the insights lede) pass a
     // larger budget so a cold boot still completes and caches, off the UI path.
-    signal: AbortSignal.timeout(opts.timeoutMs ?? Number(process.env.LLM_TIMEOUT_MS ?? 90_000)),
+    // Thinking replies take longer (GLM 5.3: ~6s for a small classify, longer for
+    // prose), so the reasoning lane gets a wider default.
+    signal: AbortSignal.timeout(opts.timeoutMs ?? Number(process.env.LLM_TIMEOUT_MS ?? (reasoning ? 150_000 : 90_000))),
   });
   if (!res.ok) {
     const body = await res.text();

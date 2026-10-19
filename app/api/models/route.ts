@@ -10,25 +10,25 @@ export const dynamic = "force-dynamic";
 // a code change by setting FINANCE_MODELS to a JSON array of the same shape.
 const CURATED = [
   {
+    id: "glm-latest",
+    label: "GLM 5.3 (thinking)",
+    location: "remote" as const,
+    provider: "Z.ai",
+    blurb: "Default: reasons before answering — data leaves your network (z.ai plan, no per-token cost)",
+  },
+  {
+    id: "glm-author",
+    label: "GLM 5.3 (fast)",
+    location: "remote" as const,
+    provider: "Z.ai",
+    blurb: "Same model with thinking off, for quick lookups — data leaves your network",
+  },
+  {
     id: "deepseek-flash-latest",
-    label: "DeepSeek V4 Flash (fast)",
+    label: "DeepSeek V4 Flash",
     location: "remote" as const,
     provider: "DeepSeek",
-    blurb: "Fast non-reasoning default — data leaves your network",
-  },
-  {
-    id: "deepseek-v4",
-    label: "DeepSeek V4 (reasoning)",
-    location: "remote" as const,
-    provider: "DeepSeek",
-    blurb: "Heavy reasoner for hard questions — data leaves your network",
-  },
-  {
-    id: "google/gemini-2.5-flash-lite",
-    label: "Gemini Flash Lite (cheap)",
-    location: "remote" as const,
-    provider: "Google",
-    blurb: "Fast and cheap for quick lookups — data leaves your network",
+    blurb: "Fallback — pay-per-token, data leaves your network",
   },
 ];
 
