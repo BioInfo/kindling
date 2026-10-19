@@ -1,3 +1,4 @@
+import { constants as sqliteConstants } from "node:sqlite";
 import { db } from "./db";
 import { chat, extractJson } from "./llm";
 
@@ -67,6 +68,25 @@ export function validateSql(sql: string): { ok: boolean; reason?: string; safe?:
   return { ok: true, safe };
 }
 
+// The regex gate above cannot see comma joins (`FROM transactions, items`) or
+// quoted identifiers (`FROM "items"`), so the hard boundary is SQLite's own
+// authorizer: while the model's SQL is prepared, only SELECT-shaped actions and
+// reads of ALLOWED_TABLES are permitted. Everything else fails at prepare time.
+function runReadOnly(sql: string): unknown[] {
+  const d = db();
+  const { SQLITE_OK, SQLITE_DENY, SQLITE_SELECT, SQLITE_READ, SQLITE_FUNCTION, SQLITE_RECURSIVE } = sqliteConstants;
+  d.setAuthorizer((action, table) => {
+    if (action === SQLITE_SELECT || action === SQLITE_FUNCTION || action === SQLITE_RECURSIVE) return SQLITE_OK;
+    if (action === SQLITE_READ && table && ALLOWED_TABLES.includes(table.toLowerCase())) return SQLITE_OK;
+    return SQLITE_DENY;
+  });
+  try {
+    return d.prepare(sql).all();
+  } finally {
+    d.setAuthorizer(null);
+  }
+}
+
 export async function askMoney(question: string, model?: string) {
   // 1. NL -> SQL
   const sqlReply = await chat(
@@ -95,7 +115,7 @@ export async function askMoney(question: string, model?: string) {
   // 3. Execute on a fresh read-only handle
   let rows: unknown[];
   try {
-    rows = db().prepare(v.safe!).all();
+    rows = runReadOnly(v.safe!);
   } catch (e: unknown) {
     return { error: `query failed: ${e instanceof Error ? e.message : String(e)}`, sql: v.safe };
   }
@@ -203,7 +223,7 @@ export async function proposeEdit(message: string, model?: string): Promise<Edit
 
   let rows: { id: string; date: string; name: string; merchant: string | null; amount: number; category: string | null; entity: string }[];
   try {
-    rows = db().prepare(v.safe!).all() as unknown as typeof rows;
+    rows = runReadOnly(v.safe!) as unknown as typeof rows;
   } catch (e: unknown) {
     return { error: `finder failed: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -234,7 +254,7 @@ export async function proposeBatchCategories(model?: string): Promise<{ kind: "b
   const rows = d.prepare(
     `SELECT id, name, merchant, amount, category
      FROM transactions
-     WHERE category IS NULL OR category = 'Other'
+     WHERE category IS NULL OR category = '' OR upper(category) = 'OTHER'
      ORDER BY ABS(amount) DESC LIMIT 40`
   ).all() as unknown as { id: string; name: string; merchant: string | null; amount: number; category: string | null }[];
 
@@ -281,9 +301,10 @@ export function applyEdit(ids: string[], changes: Partial<Record<EditableField, 
   if (!ids.length || !Object.keys(changes).length) return { updated: 0 };
   const sets: string[] = [];
   const args: (string | number)[] = [];
-  if (changes.category !== undefined) { sets.push("category=?", "category_source='manual'", "confidence=1.0"); args.push(String(changes.category)); }
-  if (changes.entity !== undefined) { sets.push("entity=?"); args.push(String(changes.entity)); }
-  if (changes.merchant !== undefined) { sets.push("merchant=?"); args.push(String(changes.merchant)); }
+  // The body comes back from the client, so re-apply proposeEdit's whitelist here.
+  if (changes.category !== undefined && (CATEGORIES as readonly string[]).includes(String(changes.category))) { sets.push("category=?", "category_source='manual'", "confidence=1.0"); args.push(String(changes.category)); }
+  if (changes.entity === "personal" || changes.entity === "business") { sets.push("entity=?"); args.push(changes.entity); }
+  if (typeof changes.merchant === "string" && changes.merchant.trim()) { sets.push("merchant=?"); args.push(changes.merchant.trim()); }
   if (changes.reviewed !== undefined) { sets.push("reviewed=?"); args.push(changes.reviewed ? 1 : 0); }
   if (!sets.length) return { updated: 0 };
 

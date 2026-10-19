@@ -20,8 +20,9 @@ export async function GET(req: NextRequest) {
     : "t.date";
   const dir = url.searchParams.get("dir") === "asc" ? "ASC" : "DESC";
   // Pagination: clamp page size to a sane range so a bad query can't pull everything.
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "50"), 1), 200);
-  const offset = Math.max(Number(url.searchParams.get("offset") ?? "0"), 0);
+  // A non-numeric value is NaN, which SQLite rejects ("datatype mismatch") as a 500.
+  const limit = Math.min(Math.max(Math.floor(Number(url.searchParams.get("limit") ?? "50")) || 50, 1), 200);
+  const offset = Math.max(Math.floor(Number(url.searchParams.get("offset") ?? "0")) || 0, 0);
   const d = db();
 
   const conds: string[] = [];

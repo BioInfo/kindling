@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { chat, extractJson } from "@/lib/llm";
+import { CATEGORIES } from "@/lib/taxonomy";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ You are given the raw descriptor and web-search snippets. Return ONLY JSON:
   "explanation": "<1-2 sentences: who they are / what this charge is>",
   "suggestedName": "<short display name, e.g. 'Square - Blue Bottle Coffee'>",
   "suggestedPattern": "<the STABLE identifying substring of the raw descriptor to match similar charges — NO transaction-specific digits, store numbers, dates, or phone numbers>",
-  "category": "<one of: Food, Shopping, Travel, Transport, Bills, Health, Entertainment, Income, Transfer:Internal, Subscriptions, Other>",
+  "category": "<one of: ${CATEGORIES.join(", ")}>",
   "confidence": "<high|medium|low>"
 }
 Rules: suggestedPattern must be a literal substring of the raw descriptor so a contains-match works. If unsure who the merchant is, say so in explanation, set confidence low, and still propose the best stable substring.`;
@@ -71,7 +72,8 @@ ${snippets.length ? snippets.map((s, i) => `${i + 1}. ${s.title} — ${s.content
     explanation: out.explanation ?? null,
     suggestedName: out.suggestedName ?? out.merchant ?? null,
     suggestedPattern: safePattern,
-    category: out.category ?? null,
+    // The UI files this into rules and rows, so only taxonomy values pass.
+    category: CATEGORIES.includes(out.category as never) ? out.category : null,
     confidence: out.confidence ?? null,
     sources: snippets.map((s) => ({ title: s.title, url: s.url })).slice(0, 4),
   });

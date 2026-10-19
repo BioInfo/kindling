@@ -36,16 +36,28 @@ export async function POST(req: NextRequest) {
   let applied = 0;
   if (b.applyNow) {
     const like = `%${String(b.pattern).toLowerCase()}%`;
-    const col = b.field === "name" ? "name" : "merchant";
+    // Same haystack applyRules() uses on sync: a merchant rule falls back to
+    // the name when merchant is empty.
+    const col = b.field === "name" ? "name" : "COALESCE(NULLIF(merchant,''), name)";
     const sets: string[] = [];
     const args: unknown[] = [];
-    if (b.category) { sets.push("category=?", "category_source='rule'", "confidence=1.0"); args.push(b.category); }
+    // A hand-set category (category_source='manual') is never overwritten.
+    const manual = "COALESCE(category_source,'')='manual'";
+    if (b.category) {
+      sets.push(
+        `category=CASE WHEN ${manual} THEN category ELSE ? END`,
+        `confidence=CASE WHEN ${manual} THEN confidence ELSE 1.0 END`,
+        `category_source=CASE WHEN ${manual} THEN category_source ELSE 'rule' END`,
+      );
+      args.push(b.category);
+    }
     if (b.entity) { sets.push("entity=?"); args.push(b.entity); }
     if (b.rename) { sets.push("merchant=?"); args.push(b.rename); }
     if (sets.length) {
       args.push(like);
       const res = d.prepare(
-        `UPDATE transactions SET ${sets.join(", ")} WHERE lower(${col}) LIKE ?`
+        `UPDATE transactions SET ${sets.join(", ")} WHERE lower(${col}) LIKE ?` +
+          (b.entity || b.rename ? "" : ` AND NOT ${manual}`)
       ).run(...(args as never[]));
       applied = Number(res.changes ?? 0);
     }
