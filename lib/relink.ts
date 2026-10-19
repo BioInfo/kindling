@@ -25,7 +25,7 @@ type Txn = {
 
 export type MergeReport = {
   into: string; from: string; institution: string | null;
-  accountsMerged: number; accountsDropped: string[]; accountsKept: string[];
+  accountsMerged: number; accountsDropped: string[]; accountsKept: string[]; // kept = moved onto the new item, balance frozen
   txnsMatched: number; txnsMoved: number; plaidRemoved: boolean | string;
 };
 
@@ -143,11 +143,14 @@ export async function mergeItemInto(fromItem: string, intoItem: string, opts: { 
       }
       const txns = (d.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE account_id = ?`).get(o.id) as { n: number }).n;
       // No twin in the new link: a $0, history-less account is a closed/deselected
-      // one and can go. Anything with money or history is kept, and so is the item.
+      // one and can go. One with money or history moves onto the new item so the
+      // old item can always be retired; keeping the old item alive would let its
+      // next sync re-insert every account merged above. Known limit: the moved
+      // account's balance stops updating (the new link does not return it).
       if (!o.current_balance && !txns) { d.prepare(`DELETE FROM accounts WHERE id = ?`).run(o.id); report.accountsDropped.push(o.id); }
-      else report.accountsKept.push(o.id);
+      else { d.prepare(`UPDATE accounts SET item_id = ? WHERE id = ?`).run(intoItem, o.id); report.accountsKept.push(o.id); }
     }
-    if (!report.accountsKept.length) {
+    {
       // Keep the original link date as the connection event (the re-link is not
       // new visibility); the new item's own event goes.
       const ev = d.prepare(`SELECT 1 FROM connection_events WHERE item_id = ?`).get(fromItem);
@@ -163,7 +166,7 @@ export async function mergeItemInto(fromItem: string, intoItem: string, opts: { 
     throw e;
   }
 
-  if (!report.accountsKept.length && opts.removeAtPlaid !== false) {
+  if (opts.removeAtPlaid !== false) {
     try { await plaid.itemRemove({ access_token: decrypt(from.access_token) }); report.plaidRemoved = true; }
     catch (e) { report.plaidRemoved = e instanceof Error ? e.message : String(e); }
   }
