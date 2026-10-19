@@ -20,6 +20,9 @@ export interface TxnRow {
   plaid_category: string | null; plaid_detailed: string | null;
   category: string | null; category_source: string | null; confidence: number | null;
   account_type: string | null;
+  // Plaid's merchant_name before any rename: the stable input for the model
+  // (so a rename cannot change its answer) and the key new rules match on.
+  raw_merchant?: string | null;
 }
 
 export interface Decision {
@@ -121,6 +124,8 @@ export const DESCRIPTOR_RULES: [string, DRule][] = [
 
   // --- Apple, Google
   ["apple cash", (_t, s) => /apple cash sent|apple cash/.test(s) ? D("Transfer:P2P", 0.9, "Apple Cash") : null],
+  // Apple Developer Program is a $99/yr APPLE.COM/US charge (receipt 2026-06-17).
+  ["apple developer", (t, s) => /apple\.com\/us/.test(s) && t.amount === 99 ? D("Subscriptions", 0.9, "Apple Developer Program") : null],
   ["apple store", (_t, s) => /apple\.com\/us|apple store|apple online/.test(s) ? D("Electronics", 0.75, "Apple Store") : null],
   ["apple services", (_t, s) => /apple\.com\/bill|itunes/.test(s) ? D("Subscriptions", 0.95, "Apple") : null],
   ["google one", (_t, s) => /google one/.test(s) ? D("Subscriptions", 1, "Google One") : null],
@@ -145,6 +150,8 @@ export const DESCRIPTOR_RULES: [string, DRule][] = [
   // --- loans and money movement
   ["auto loan", (t, s) => /hyundai motor finance|hmf hmfusa|motor finance/.test(s) && t.amount > 0 ? D("Loan Payments", 0.95, "Hyundai Motor Finance") : null],
   ["student loan", (t, s) => /dept education student ln|department of education/.test(s) && t.amount > 0 ? D("Loan Payments", 0.95, "US Dept of Education (student loan)") : null],
+  // Plaid files the USAA property & casualty autopay as a card payment; it is the insurance premium.
+  ["usaa p&c", (t, s) => /usaa p&c|usaa p ?c autopay/.test(s) && t.amount > 0 ? D("Insurance", 0.95, "USAA Insurance") : null],
   ["529", (_t, s) => /invest ?529/.test(s) ? D("Transfer:Brokerage", 1, "Invest529") : null],
   ["spouse zelle", (_t, s) => /zelle.*(sarah schroeder)/.test(s) ? D("Transfer:Internal", 0.85) : null],
 
@@ -159,7 +166,7 @@ export const DESCRIPTOR_RULES: [string, DRule][] = [
 ];
 
 export function descriptorDecision(t: TxnRow): Decision | null {
-  const s = `${stripAllySuffix(t.name ?? "")} ${t.merchant ?? ""}`.toLowerCase().trim();
+  const s = `${stripAllySuffix(t.name ?? "")} ${(t.raw_merchant !== undefined ? t.raw_merchant : t.merchant) ?? ""}`.toLowerCase().trim();
   for (const [reason, rule] of DESCRIPTOR_RULES) {
     const hit = rule(t, s);
     if (hit) return { ...hit, source: "rule", reason: `descriptor:${reason}` };
@@ -276,7 +283,8 @@ function toDecision(category: string, merchant: string | null, confidence: numbe
 export interface RowPlan { row: TxnRow; final: Decision | null; independent: Decision | null; receipt: TxnReceipt | null }
 
 const TXN_SELECT = `SELECT t.id, t.date, t.name, t.merchant, t.amount, t.plaid_category, t.plaid_detailed,
-  t.category, t.category_source, t.confidence, a.type AS account_type
+  t.category, t.category_source, t.confidence, a.type AS account_type,
+  CASE WHEN t.raw IS NULL THEN t.merchant ELSE json_extract(t.raw, '$.merchant_name') END AS raw_merchant
   FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id`;
 
 export function loadTxns(where = "1=1", ...args: (string | number)[]): TxnRow[] {
@@ -317,7 +325,7 @@ export async function planRows(rows: TxnRow[], opts: { llm: boolean; rules?: DbR
       if (opts.llm) {
         needLlm.push({
           plan, slot: user ? "independent" : "both",
-          input: { id: t.id, name: t.name ? stripAllySuffix(t.name) : null, merchant: t.merchant, plaid: t.plaid_detailed,
+          input: { id: t.id, name: t.name ? stripAllySuffix(t.name) : null, merchant: t.raw_merchant ?? null, plaid: t.plaid_detailed,
             amount: t.amount, account: t.account_type, ...(receipt ? { receipt: receiptText(receipt) } : {}) },
         });
       } else {
@@ -335,7 +343,11 @@ export async function planRows(rows: TxnRow[], opts: { llm: boolean; rules?: DbR
   if (needLlm.length) {
     const got = await llmDecide(needLlm.map((n) => n.input), { maxCalls: opts.maxLlmCalls });
     for (const n of needLlm) {
-      const dec = got.get(n.input.id) ?? null;
+      let dec = got.get(n.input.id) ?? null;
+      // An unsure model is no reason to throw away a real category: the row
+      // keeps it (still low-confidence, so still in To-Review).
+      const cur = n.plan.row.category;
+      if (dec && dec.confidence < 0.6 && cur && CATS.has(cur) && cur !== "Other") dec = null;
       n.plan.independent = dec;
       if (n.slot === "both") n.plan.final = dec;
     }
@@ -361,7 +373,14 @@ export function diffPlans(plans: RowPlan[]): Change[] {
 // Rule and receipt names always apply; a model-suggested name only fills a blank.
 function mergeMerchant(t: TxnRow, f: Decision): string | null {
   if (!f.merchant) return t.merchant;
-  if (f.source === "llm") return t.merchant && t.merchant.trim() ? t.merchant : f.merchant;
+  if (f.source === "llm") {
+    if (t.merchant && t.merchant.trim()) return t.merchant;
+    // The model tidies, it does not invent: every word it offers must already
+    // be in the descriptor ("Computershare Dividends" for a share sale fails).
+    const raw = (t.name ?? "").toLowerCase();
+    const words = f.merchant.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+    return words.length && words.every((w) => raw.includes(w)) ? f.merchant : t.merchant;
+  }
   return f.merchant;
 }
 
@@ -412,7 +431,8 @@ export function auditRules(rules: DbRule[], plans: RowPlan[]): RuleAudit {
     p.row.category_source === "manual" ? p.row.category
       : p.final && p.final.confidence >= 0.8 && p.final.category !== "Other" ? p.final.category : null;
   const matchedBy = (r: Pick<DbRule, "match_type" | "pattern" | "field">) =>
-    live.filter((p) => ruleMatches(r, p.row.merchant, p.row.name ?? ""));
+    live.filter((p) => ruleMatches(r, p.row.merchant, p.row.name ?? "")
+      || ruleMatches(r, p.row.raw_merchant ?? null, p.row.name ?? ""));
 
   const deletes: RuleAudit["deletes"] = [];
   const seen = new Map<string, DbRule>();
@@ -439,7 +459,10 @@ export function auditRules(rules: DbRule[], plans: RowPlan[]): RuleAudit {
   const adds: RuleAudit["adds"] = [];
   const groups = new Map<string, RowPlan[]>();
   for (const p of live) {
-    const m = (p.final ? mergeMerchant(p.row, p.final) : p.row.merchant)?.trim();
+    // Keyed on Plaid's own merchant_name, which is what sync matches a new row
+    // on. Rows a descriptor rule or a receipt decides need no rule.
+    if (p.final && /^(descriptor|receipt|user-rule)/.test(p.final.reason)) continue;
+    const m = (p.row.raw_merchant ?? "").trim();
     if (!m || m.length < 4 || MULTI_CATEGORY_MERCHANT.test(m) || /zelle|transfer|payment|deposit|interest/i.test(m)) continue;
     groups.set(m, [...(groups.get(m) ?? []), p]);
   }
