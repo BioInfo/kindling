@@ -7,7 +7,7 @@ import { captureSnapshot } from "./networth";
 import { syncHoldings } from "./holdings";
 import { refreshEquityQuotes } from "./equity";
 import { reconcileSubscriptions } from "./subscriptions";
-import { dedupeMergedTransactions } from "./relink";
+import { dedupeMergedTransactions, absorbById } from "./relink";
 import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 
 // Pulls new/modified/removed transactions for every Item via the cursor-based
@@ -159,6 +159,9 @@ function upsertTxn(t: Transaction) {
     entity: ruled.entity ?? "personal",
     raw: JSON.stringify(t),
   });
+  // Posted copy of a pending txn: carry the user's category/entity/note over
+  // before the pending row is removed (removals apply after adds).
+  if (t.pending_transaction_id) absorbById(t.pending_transaction_id, t.transaction_id);
 }
 
 function removeTxn(t: RemovedTransaction) {

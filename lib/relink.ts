@@ -79,6 +79,17 @@ function absorb(oldT: Txn, newT: Txn) {
 
 const txnCols = `id, date, name, amount, merchant, category, category_source, confidence, entity, note, reviewed`;
 
+// absorb() by id. Sync uses it for pending → posted: Plaid posts under a new
+// transaction_id and removes the pending row, which would drop its curation.
+export function absorbById(oldId: string, newId: string): boolean {
+  const get = db().prepare(`SELECT ${txnCols} FROM transactions WHERE id = ?`);
+  const o = get.get(oldId) as unknown as Txn | undefined;
+  const n = get.get(newId) as unknown as Txn | undefined;
+  if (!o || !n || o.id === n.id) return false;
+  absorb(o, n);
+  return true;
+}
+
 function mergeAccount(oldId: string, newId: string, fromItem: string): { matched: number; moved: number } {
   const d = db();
   const oldT = d.prepare(`SELECT ${txnCols} FROM transactions WHERE account_id = ?`).all(oldId) as unknown as Txn[];
