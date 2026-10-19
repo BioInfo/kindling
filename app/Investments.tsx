@@ -134,7 +134,7 @@ function AllocDonut({ slices, total }: { slices: AllocSlice[]; total?: number })
         {slices.map((s, i) => (
           <span key={s.key} className="flex items-center gap-1.5" style={{ color: "var(--muted)" }}>
             <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
-            <span className="capitalize" style={{ color: "var(--text)" }}>{s.key}</span>
+            <span className="min-w-0 truncate capitalize" style={{ color: "var(--text)" }}>{s.key}</span>
             <span className="ml-auto whitespace-nowrap tabular-nums">{money(s.value)} · {Math.round(s.pct * 100)}%</span>
           </span>
         ))}
@@ -309,11 +309,11 @@ export function InvestmentsPanel({ data, reload }: { data: InvestmentsData | nul
             ))}
           </div>
           <div className="grid items-stretch gap-3 md:grid-cols-2">
-            <div className="rounded-xl p-4" style={panel}>
+            <div className="min-w-0 rounded-xl p-4" style={panel}>
               <div className="mb-2 text-sm font-medium">By asset type</div>
               <AllocDonut slices={byType} total={total} />
             </div>
-            <div className="rounded-xl p-4" style={panel}>
+            <div className="min-w-0 rounded-xl p-4" style={panel}>
               <div className="mb-2 text-sm font-medium">By account</div>
               <AllocBars rows={accountsNonZero} />
             </div>
