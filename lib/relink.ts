@@ -197,6 +197,11 @@ export function dedupeMergedTransactions(): number {
     const live = d.prepare(`SELECT ${txnCols} FROM transactions WHERE account_id = ? AND merged_from IS NULL`).all(account_id) as unknown as Txn[];
     const pairs = pairTxns(merged, live);
     for (const o of merged) { const t = pairs.get(o.id); if (t) { absorb(o, t); n++; } }
+    // A pending row from the removed item will never post or be removed by Plaid.
+    // Once the live link has delivered history, an unmatched one is a stale hold.
+    if (live.length) {
+      n += Number(d.prepare(`DELETE FROM transactions WHERE account_id = ? AND merged_from IS NOT NULL AND pending = 1`).run(account_id).changes);
+    }
   }
   return n;
 }
