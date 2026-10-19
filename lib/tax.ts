@@ -137,8 +137,8 @@ export type TaxView = {
   advisory: string;
 };
 
-export function taxView(year: number): TaxView {
-  const asOf = today();
+// asOf is for checks and what-ifs; callers leave it as today.
+export function taxView(year: number, asOf: string = today()): TaxView {
   const profile = getProfile(year);
   const mfj = profile.filing_status === "mfj";
   const stdDed = STD_DEDUCTION[(profile.filing_status as keyof typeof STD_DEDUCTION)] ?? STD_DEDUCTION.mfj;
@@ -157,7 +157,6 @@ export function taxView(year: number): TaxView {
 
   // --- payments already made (federal) ---
   const fedPaid = listPayments(year).filter((p) => p.jurisdiction === "federal").reduce((s, p) => s + p.amount, 0);
-  const statePaid = listPayments(year).filter((p) => p.jurisdiction === "state").reduce((s, p) => s + p.amount, 0);
 
   // --- safe harbor (federal) ---
   const mult = profile.prior_agi_over_threshold ? SAFE_HARBOR_HIGH : SAFE_HARBOR_LOW;
@@ -183,29 +182,47 @@ export function taxView(year: number): TaxView {
   const projectedWithholding = profile.est_fed_withholding;
   const gap = Math.max(0, round0(target - projectedWithholding - fedPaid));
 
-  // --- quarterly plan (federal): spread the remaining gap across quarters still open ---
-  const buildQuarters = (deadlines: { q: number; due: string }[], totalNeeded: number, paidByQ: Map<number, number>): Quarter[] => {
-    const openQs = deadlines.filter((d) => daysBetween(asOf, d.due) >= 0);
-    const perOpen = openQs.length > 0 ? totalNeeded / openQs.length : 0;
+  // --- quarterly plan: the IRS required installment is 25% of the annual amount
+  // each quarter (withholding counts as paid evenly). A shortfall in a past
+  // quarter keeps accruing a penalty until paid, so it lands on the NEXT open
+  // quarter (pay it now), not spread thin across the rest of the year. An
+  // overpayment carries forward as a credit. A quarter is "paid" only when what
+  // was paid covers what it owed. ---
+  const buildQuarters = (deadlines: { q: number; due: string }[], annualNeeded: number, paidByQ: Map<number, number>): Quarter[] => {
+    const base = Math.max(0, annualNeeded) / deadlines.length;
+    let carry = 0; // + = shortfall still owed, − = credit
     return deadlines.map((d) => {
       const du = daysBetween(asOf, d.due);
       const paid = paidByQ.get(d.q) ?? 0;
       const isOpen = du >= 0;
-      const recommended = isOpen ? round0(perOpen) : 0;
+      const owed = base + carry;
+      const recommended = isOpen ? Math.max(0, round0(owed - paid)) : 0;
+      // Past: the unpaid part rolls forward. Open: we recommend paying it here,
+      // so only a credit rolls forward.
+      carry = isOpen ? Math.min(0, owed - paid) : owed - paid;
       let status: Quarter["status"];
-      if (paid > 0) status = "paid";
+      if (paid > 0 && paid >= owed - 0.5) status = "paid";
       else if (!isOpen) status = "past-unpaid";
       else if (du <= 21) status = "due-soon";
       else status = "upcoming";
       return { q: d.q, label: `Q${d.q}`, due: d.due, daysUntil: du, status, recommended, paid };
     });
   };
-  const fedPaidByQ = new Map<number, number>();
-  for (const p of listPayments(year)) if (p.jurisdiction === "federal" && p.quarter) fedPaidByQ.set(p.quarter, (fedPaidByQ.get(p.quarter) ?? 0) + p.amount);
-  const statePaidByQ = new Map<number, number>();
-  for (const p of listPayments(year)) if (p.jurisdiction === "state" && p.quarter) statePaidByQ.set(p.quarter, (statePaidByQ.get(p.quarter) ?? 0) + p.amount);
+  // A payment logged without a quarter counts toward the installment it was
+  // made in time for (the first deadline on or after the paid date).
+  const paidByQuarter = (jurisdiction: string, deadlines: { q: number; due: string }[]) => {
+    const m = new Map<number, number>();
+    for (const p of listPayments(year)) {
+      if (p.jurisdiction !== jurisdiction) continue;
+      const q = p.quarter ?? (deadlines.find((d) => p.paid_date <= d.due) ?? deadlines[deadlines.length - 1]).q;
+      m.set(q, (m.get(q) ?? 0) + p.amount);
+    }
+    return m;
+  };
+  const fedPaidByQ = paidByQuarter("federal", fedDeadlines(year));
+  const statePaidByQ = paidByQuarter("state", vaDeadlines(year));
 
-  const quarters = buildQuarters(fedDeadlines(year), gap, fedPaidByQ);
+  const quarters = buildQuarters(fedDeadlines(year), target - projectedWithholding, fedPaidByQ);
 
   // state safe harbor — same shape as federal: default to prior-year × multiplier,
   // but a pinned expected-state-tax override unlocks the lower 90%-of-current path
@@ -214,8 +231,7 @@ export function taxView(year: number): TaxView {
   const stateTargetPrior = round0(profile.prior_year_state_tax * mult);
   const stateTargetCurrent = profile.est_state_tax_override > 0 ? round0(profile.est_state_tax_override * 0.9) : 0;
   const stateTarget = (stateTargetCurrent > 0 && stateTargetCurrent < stateTargetPrior) ? stateTargetCurrent : stateTargetPrior;
-  const stateGap = Math.max(0, round0(stateTarget - profile.est_state_withholding - statePaid));
-  const stateQuarters = buildQuarters(vaDeadlines(year), stateGap, statePaidByQ);
+  const stateQuarters = buildQuarters(vaDeadlines(year), stateTarget - profile.est_state_withholding, statePaidByQ);
 
   // --- next due across both jurisdictions ---
   const upcoming: { jurisdiction: string; q: number; due: string; daysUntil: number; amount: number }[] = [];
