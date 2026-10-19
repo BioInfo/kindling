@@ -436,6 +436,26 @@ export type SubsView = {
 
 const isObligation = (s: Subscription) => s.type === "obligation";
 
+// Merchant keys whose outflows are mostly credit-card payments or transfers
+// between own accounts (the same categories detectRecurring skips). Plaid's
+// recurring streams include card autopays; counting one as a bill double-counts
+// every card charge behind it.
+function movementKeys(): Set<string> {
+  const rows = db().prepare(
+    `SELECT COALESCE(merchant, name) AS m, category FROM transactions
+     WHERE amount > 0 AND COALESCE(merchant, name) IS NOT NULL AND date >= date('now','-400 days')`
+  ).all() as { m: string; category: string | null }[];
+  const tally = new Map<string, { move: number; n: number }>();
+  for (const r of rows) {
+    const k = norm(r.m);
+    const t = tally.get(k) ?? { move: 0, n: 0 };
+    t.n++;
+    if (r.category === "CreditCardPayment" || r.category === "Transfer:Internal") t.move++;
+    tally.set(k, t);
+  }
+  return new Set([...tally].filter(([, t]) => t.move * 2 > t.n).map(([k]) => k));
+}
+
 // Expense subscriptions for a surface, newest-cost first. Income recurring stays
 // in the Transactions › Recurring view; this surface is about cost. The hero +
 // donut count SUBSCRIPTIONS (discretionary recurring spend you could cut);
@@ -448,7 +468,8 @@ export function listSubscriptions(entity?: string | null): SubsView {
   const rows = db().prepare(
     `SELECT * FROM subscriptions WHERE ${where.join(" AND ")} ORDER BY monthly DESC`
   ).all(...(args as never[])) as unknown as SubRow[];
-  const subs = rows.map(toSub);
+  const moves = movementKeys();
+  const subs = rows.map(toSub).filter((s) => !moves.has(s.merchantKey));
 
   const counted = subs.filter((s) => s.state === "active" || s.state === "trial");
   const subsCounted = counted.filter((s) => !isObligation(s));
