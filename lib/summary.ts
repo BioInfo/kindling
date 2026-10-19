@@ -12,7 +12,7 @@ import { prettyCategory } from "./taxonomy";
 // SQL and handed to the model; the model only restates them in prose, it never
 // invents a figure. The budgets + goals nudges ride along as the call to action.
 
-const SPEND_EXCLUDE = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment", "Income"];
+const SPEND_EXCLUDE = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment", "Income", "TRANSFER_OUT", "TRANSFER_IN"];
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export type CatMove = { category: string; thisWeek: number; lastWeek: number; delta: number };
