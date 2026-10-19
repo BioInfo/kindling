@@ -256,11 +256,11 @@ export function taxView(year: number): TaxView {
   // --- Business Schedule-C: outflows tagged business, grouped by category (deductible candidates) ---
   const scRows = db().prepare(
     `SELECT COALESCE(category,'Uncategorized') AS category, COALESCE(SUM(amount),0) AS amount
-     FROM transactions WHERE entity='business' AND amount > 0 AND date >= ? GROUP BY category ORDER BY amount DESC`
-  ).all(`${year}-01-01`) as unknown as { category: string; amount: number }[];
+     FROM transactions WHERE entity='business' AND amount > 0 AND date >= ? AND date < ? GROUP BY category ORDER BY amount DESC`
+  ).all(`${year}-01-01`, `${year + 1}-01-01`) as unknown as { category: string; amount: number }[];
   const scIncomeRow = db().prepare(
-    `SELECT COALESCE(-SUM(amount),0) AS income FROM transactions WHERE entity='business' AND amount < 0 AND date >= ?`
-  ).get(`${year}-01-01`) as { income: number };
+    `SELECT COALESCE(-SUM(amount),0) AS income FROM transactions WHERE entity='business' AND amount < 0 AND date >= ? AND date < ?`
+  ).get(`${year}-01-01`, `${year + 1}-01-01`) as { income: number };
   const totalExpense = round2(scRows.reduce((s, r) => s + r.amount, 0));
   const income = round2(scIncomeRow.income ?? 0);
 

@@ -19,6 +19,7 @@ export type Recurring = {
   monthly: number;        // amount normalized to a monthly figure
   priceChange: number;    // lastAmount − avgAmount (positive = the latest charge jumped)
   variableAmount: boolean; // amount swings enough to be usage-based (e.g. AWS, OpenAI)
+  lapsed: boolean;        // missed two cycles: history, not a future charge (see isLapsed)
 };
 
 type Row = { date: string; merchant: string; amount: number; category: string | null };
@@ -37,6 +38,12 @@ export function isLapsed(lastDate: string, intervalDays: number, asOf = new Date
   const since = (Date.parse(asOf + "T00:00:00Z") - Date.parse(lastDate + "T00:00:00Z")) / 86400000;
   return since > Math.max(1, intervalDays) * 2 + 7;
 }
+
+// Discretionary categories where a merchant is visited, not billed.
+const VISIT_CATS = new Set([
+  "Dining", "Food", "Groceries", "Travel", "Shopping", "Entertainment",
+  "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "TRAVEL", "ENTERTAINMENT",
+]);
 
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
@@ -72,10 +79,20 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
      ORDER BY date ASC`
   ).all(...(args as never[])) as unknown as Row[];
 
+  // A stream the user dismissed on the Subscriptions surface ("not recurring")
+  // must not come back here and be scheduled by the forecast, digest or alerts.
+  const dismissed = new Set(
+    (db().prepare(
+      `SELECT merchant_key, direction FROM subscriptions WHERE state = 'dismissed'${opts.entity ? " AND entity = ?" : ""}`
+    ).all(...((opts.entity ? [opts.entity] : []) as never[])) as { merchant_key: string; direction: string }[])
+      .map((d) => d.merchant_key + (d.direction === "income" ? "|in" : "|out"))
+  );
+
   const groups = new Map<string, Row[]>();
   for (const r of rows) {
     const key = norm(r.merchant) + (r.amount >= 0 ? "|out" : "|in");
     if (key.startsWith("|")) continue; // unnameable
+    if (dismissed.has(key)) continue;
     let arr = groups.get(key);
     if (!arr) { arr = []; groups.set(key, arr); }
     arr.push(r);
@@ -105,6 +122,16 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
     if (mean <= 0 || cv > 0.6) continue;
 
     const last = g[g.length - 1];
+    // Regular visits to a restaurant, cafe, store or a run of Airbnb stays
+    // land on a cadence too, but each one is a different amount. A real charge
+    // in these categories (a delivery pass, a streaming plan filed as
+    // Entertainment) repeats an exact price, so require one amount to cover at
+    // least half the charges.
+    if (last.category && VISIT_CATS.has(last.category)) {
+      const freq = new Map<string, number>();
+      for (const a of amts) freq.set(a.toFixed(2), (freq.get(a.toFixed(2)) ?? 0) + 1);
+      if (Math.max(...freq.values()) * 2 < g.length) continue;
+    }
     out.push({
       merchant: last.merchant,
       category: last.category,
@@ -120,6 +147,7 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
       monthly: round2(mean * (30.44 / gap)),
       priceChange: round2(Math.abs(last.amount) - mean),
       variableAmount: cv > 0.35,
+      lapsed: isLapsed(last.date, gap),
     });
   }
   return out.sort((a, b) => b.monthly - a.monthly);

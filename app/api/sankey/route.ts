@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 // Money-flow for a window: income sources (inflows) on the left, spending
 // categories (outflows) on the right. Internal money movement is excluded on
 // both sides so the flow is real income → real spending.
-const NON_FLOW = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment"];
+const NON_FLOW = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment", "TRANSFER_OUT", "TRANSFER_IN"];
 
 // Strip noisy bank-statement suffixes and cap length so income nodes read clean.
 function cleanLabel(s: string): string {

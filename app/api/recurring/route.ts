@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     recurring: expenses,
     income,
-    monthlyExpense: Math.round(expenses.reduce((s, r) => s + r.monthly, 0) * 100) / 100,
-    monthlyIncome: Math.round(income.reduce((s, r) => s + r.monthly, 0) * 100) / 100,
+    // Totals are the live monthly load; lapsed streams stay listed (flagged) as history.
+    monthlyExpense: Math.round(expenses.filter((r) => !r.lapsed).reduce((s, r) => s + r.monthly, 0) * 100) / 100,
+    monthlyIncome: Math.round(income.filter((r) => !r.lapsed).reduce((s, r) => s + r.monthly, 0) * 100) / 100,
   });
 }

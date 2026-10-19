@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { plaid } from "./plaid";
 import { decrypt } from "./crypto";
-import { detectRecurring, norm } from "./recurring";
+import { detectRecurring, isLapsed, norm } from "./recurring";
 import { mapPfc } from "./taxonomy";
 import { chat, extractJson } from "./llm";
 
@@ -402,7 +402,10 @@ function toSub(r: SubRow): Subscription {
     cadence: r.cadence ?? "monthly", intervalDays: r.interval_days ?? 30,
     avgAmount: r.avg_amount, lastAmount: r.last_amount, monthly: r.monthly, count: r.count,
     firstDate: r.first_date, lastDate: r.last_date, nextExpected: r.next_expected,
-    isActive: !!r.is_active, priceChange: r.price_change, variableAmount: !!r.variable_amount,
+    // is_active is only rewritten when detection still finds the stream; a row it
+    // stopped finding (too few charges left in the window, a merchant rename)
+    // would stay "active" forever, so apply the lapse rule to the stored date too.
+    isActive: !!r.is_active && !(r.last_date && isLapsed(r.last_date, r.interval_days ?? 30)), priceChange: r.price_change, variableAmount: !!r.variable_amount,
     state: (r.state as SubState), trialEnds: r.trial_ends, color: r.color, icon: r.icon,
     note: r.note, workMove: r.work_move, source: r.source, plaidStreamId: r.plaid_stream_id,
   };
@@ -433,6 +436,26 @@ export type SubsView = {
 
 const isObligation = (s: Subscription) => s.type === "obligation";
 
+// Merchant keys whose outflows are mostly credit-card payments or transfers
+// between own accounts (the same categories detectRecurring skips). Plaid's
+// recurring streams include card autopays; counting one as a bill double-counts
+// every card charge behind it.
+function movementKeys(): Set<string> {
+  const rows = db().prepare(
+    `SELECT COALESCE(merchant, name) AS m, category FROM transactions
+     WHERE amount > 0 AND COALESCE(merchant, name) IS NOT NULL AND date >= date('now','-400 days')`
+  ).all() as { m: string; category: string | null }[];
+  const tally = new Map<string, { move: number; n: number }>();
+  for (const r of rows) {
+    const k = norm(r.m);
+    const t = tally.get(k) ?? { move: 0, n: 0 };
+    t.n++;
+    if (r.category === "CreditCardPayment" || r.category === "Transfer:Internal") t.move++;
+    tally.set(k, t);
+  }
+  return new Set([...tally].filter(([, t]) => t.move * 2 > t.n).map(([k]) => k));
+}
+
 // Expense subscriptions for a surface, newest-cost first. Income recurring stays
 // in the Transactions › Recurring view; this surface is about cost. The hero +
 // donut count SUBSCRIPTIONS (discretionary recurring spend you could cut);
@@ -445,7 +468,8 @@ export function listSubscriptions(entity?: string | null): SubsView {
   const rows = db().prepare(
     `SELECT * FROM subscriptions WHERE ${where.join(" AND ")} ORDER BY monthly DESC`
   ).all(...(args as never[])) as unknown as SubRow[];
-  const subs = rows.map(toSub);
+  const moves = movementKeys();
+  const subs = rows.map(toSub).filter((s) => !moves.has(s.merchantKey));
 
   const counted = subs.filter((s) => s.state === "active" || s.state === "trial");
   const subsCounted = counted.filter((s) => !isObligation(s));

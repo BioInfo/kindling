@@ -5,7 +5,9 @@ export const dynamic = "force-dynamic";
 
 // Spend-by-category for a window, excluding internal money movement (transfers,
 // CC payments) so "spending" means actual outflow. Optional entity filter.
-const EXCLUDE = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment", "Income"];
+// TRANSFER_OUT/IN are raw Plaid primaries on rows nobody has categorized yet
+// (e.g. savings -> checking); they are transfers whichever way they resolve.
+const EXCLUDE = ["Transfer:Internal", "Transfer:Brokerage", "Transfer:P2P", "CreditCardPayment", "Income", "TRANSFER_OUT", "TRANSFER_IN"];
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);

@@ -133,6 +133,8 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
 
     // Due soon: walk the cadence forward from the last charge to the next
     // occurrence at/after today; flag if it lands inside the next 7 days.
+    // A lapsed stream has no next charge to warn about.
+    if (r.lapsed) continue;
     const step = Math.max(1, r.intervalDays);
     let next = r.lastDate, guard = 0;
     while (next < now && guard < 5000) { next = addDays(next, step); guard++; }
