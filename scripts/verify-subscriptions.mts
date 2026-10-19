@@ -130,7 +130,7 @@ await check("live fixes 2026-10-18", async () => {
   const ro = find(/ro health/i);
   ok("Ro Health monthly leaves out the $888 one-off", !!ro && ro.monthly < 600 && (ro.oneOffs?.total ?? 0) >= 888, `${ro?.monthly} ${JSON.stringify(ro?.oneOffs)}`);
   const kin = find(/kindle/i);
-  ok("Kindle monthly leaves out book purchases", !!kin && kin.monthly < 30 && !!kin.oneOffs, `${kin?.monthly}`);
+  ok("Kindle monthly leaves out book purchases", !!kin && kin.monthly < 30, `${kin?.monthly}`);
   const apple = find(/^apple/i);
   ok("Apple monthly leaves out app purchases and stopped plans", !!apple && apple.monthly < 40, String(apple?.monthly));
   const uberSubs = subs.filter((s) => /uber/i.test(s.merchant) && s.group === "subs");
@@ -192,11 +192,32 @@ await check("llm batch", async () => {
   const userAfter = db().prepare(`SELECT id, type FROM subscriptions WHERE type_source = 'user'`).all() as { id: string; type: string }[];
   ok("LLM never overwrites a user edit", JSON.stringify(userBefore) === JSON.stringify(userAfter));
   llmReply = () => { throw new Error("gateway down"); };
-  db().prepare(`UPDATE subscriptions SET type = NULL, type_source = NULL WHERE merchant = 'Amazon'`).run();
+  // Amazon is a registry brand now, so the rules label it; Nanonoble still goes to the LLM.
+  db().prepare(`UPDATE subscriptions SET type = NULL, type_source = NULL WHERE merchant = 'Nanonoble Pte. Ltd.'`).run();
   let threw = false;
   const r2 = await enrichMod.postSyncEnrich({ llm: true }).catch(() => { threw = true; return null; });
   ok("gateway failure: enrich resolves, reports the error", !threw && !!r2 && r2.errors.length > 0, JSON.stringify(r2?.errors));
   llmReply = null;
+});
+
+await check("category-seeded noise 2026-10-18", async () => {
+  type R = Row & { displayName?: string; count?: number };
+  const subs = view().subs as R[];
+  const name = (s: R) => s.displayName ?? s.merchant;
+  const prime = subs.find((s) => /amazon prime/i.test(name(s)));
+  ok("Amazon Prime is the yearly fee, not $139/mo", !!prime && prime.cadence === "yearly" && prime.monthly < 20, `${prime?.cadence} ${prime?.monthly}`);
+  const single = subs.filter((s) => s.isActive && s.count === 1 && s.cadence !== "yearly");
+  ok("no single-charge row is live unless yearly", !single.length, single.map(name).join(", "));
+  const shop = subs.filter((s) => grp(s) === "subs" && (/^amazon$/i.test(name(s)) || /^kindle$/i.test(name(s))));
+  ok("Amazon marketplace and Kindle book purchases are not subscriptions", !shop.length, shop.map((s) => `${name(s)} ${s.monthly}`).join(", "));
+  const ku = subs.find((s) => /kindle unlimited/i.test(name(s)));
+  ok("Kindle Unlimited stays a live subscription", !!ku && grp(ku) === "subs" && ku.monthly > 5, `${ku?.monthly}`);
+  const ro = subs.find((s) => /ro health/i.test(name(s)));
+  ok("Ro Health is a Healthcare bill, out of the hero", ro?.type === "bill" && ro?.category === "Healthcare" && grp(ro) !== "subs" && ro.monthly < 600, `${ro?.type} ${ro?.category} ${ro?.monthly}`);
+  db().prepare(`UPDATE subscriptions SET state = 'active' WHERE merchant LIKE '%wawa%' AND state = 'dismissed'`).run();
+  const rec = await import(`${LIB}/recurring.ts`);
+  const wawa = (rec.detectRecurring() as { merchant: string }[]).filter((r) => /wawa/i.test(r.merchant));
+  ok("Wawa store visits are not detected as recurring, even undismissed", !wawa.length, wawa.map((r) => r.merchant).join(", "));
 });
 
 await check("type override moves a row cleanly", async () => {

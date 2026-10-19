@@ -179,7 +179,7 @@ const BRANDS: Brand[] = [
   { re: /\bdmv\b|motor vehicle/, brand: "dmv", type: B, category: "Fees", group: "Transport" },
   { re: /tax withheld|\birs\b|\btax\b/, brand: "tax", type: B, category: "Taxes", group: "Taxes", noMerge: true },
   { re: /education|tuition|school/, brand: "education", type: B, category: "Education", group: "Education", noMerge: true },
-  { re: /\bro health\b|hims|hers/, brand: "ro", label: "Ro", type: M, category: "Healthcare", group: "Health" },
+  { re: /\bro health\b|hims|hers/, brand: "ro", label: "Ro", type: B, category: "Healthcare", group: "Health" }, // telehealth plus refills: healthcare, not a cancellable subscription
   { re: /therapy|medical|pharmacy|walgreens|\bcvs\b|dental|clinic|hospital|animal medical|\bvet\b/, brand: "health", type: B, category: "Healthcare", group: "Health", noMerge: true },
   // Card annual fees: yearly by nature, a membership you can downgrade.
   { re: /(amex|american express).*(membership|renewal|annual)|renewal membership fee|annual membership fee|annual fee/, brand: "card-fee", type: M, category: "Fees", group: "Card fees", annual: true, noMerge: true },
@@ -213,11 +213,13 @@ const BRANDS: Brand[] = [
   { re: /netflix|hulu|peacock|disney|paramount|\bmax\b|hbo|youtube|appletv|apple tv/, brand: "video", type: S, category: "Entertainment", group: "Streaming", overlap: "Video streaming", noMerge: true },
   { re: /spotify|apple music|tidal|pandora|sirius/, brand: "music", type: S, category: "Entertainment", group: "Music", overlap: "Music", noMerge: true },
   { re: /audible/, brand: "audible", label: "Audible", type: S, category: "Entertainment", group: "Reading & audio", overlap: "Books & audio" },
-  { re: /kindle/, brand: "kindle", label: "Kindle", type: S, category: "Entertainment", group: "Reading & audio", overlap: "Books & audio" },
+  { re: /kindle/, brand: "kindle", label: "Kindle Unlimited", type: S, category: "Entertainment", group: "Reading & audio", overlap: "Books & audio", only: /unltd|unlimited/i },
   { re: /new york times|nytimes|\bnyt\b|wsj|washington post|economist|substack/, brand: "news", type: S, category: "Subscriptions", group: "News", noMerge: true },
   { re: /x corp|^x$|^x |twitter/, brand: "x", label: "X Premium", type: S, category: "Subscriptions", group: "Social" },
   // Memberships and other.
-  { re: /amazon prime|prime video|primevideo/, brand: "amazon-prime", label: "Amazon Prime", type: M, category: "Shopping", group: "Memberships" },
+  { re: /amazon prime|prime video|primevideo/, brand: "amazon-prime", label: "Amazon Prime", type: M, category: "Shopping", group: "Memberships", annual: true },
+  // Marketplace shopping is not a plan; only Amazon digital subscriptions recur.
+  { re: /^amazon$|amazon\.com|amazon mktpl/, brand: "amazon-shop", type: S, category: "Shopping", group: "Shopping", noMerge: true, only: /prime video|channels?|amazon music|digital subscri/i },
   { re: /costco|sam'?s club|\baaa\b|bj'?s wholesale/, brand: "warehouse", type: M, category: "Shopping", group: "Memberships", noMerge: true },
   { re: /recreation|ymca|\bgym\b|fitness|peloton/, brand: "fitness", type: M, category: "Entertainment", group: "Fitness & rec", noMerge: true },
   // Rides and deliveries are visits; only the fixed membership charge recurs.
@@ -415,6 +417,13 @@ function categorySeededCandidates(): Candidate[] {
   const out: Candidate[] = [];
   for (const g of groups.values()) {
     let intervalDays = 30, cadence = "monthly";
+    // One charge has no cadence. A known annual fee (Prime, a card renewal) is
+    // yearly; anything else waits for a second charge instead of being assumed
+    // monthly ($139 Prime once read as $139/mo).
+    if (g.dates.length === 1) {
+      if (!(ANNUAL_RE.test(g.merchant) || matchBrand(g.merchant, norm(g.merchant))?.annual)) continue;
+      cadence = "yearly"; intervalDays = 365;
+    }
     if (g.dates.length >= 2) {
       const gaps: number[] = [];
       for (let i = 1; i < g.dates.length; i++)
@@ -723,17 +732,32 @@ function streamsOf(txns: SubMemberTxn[], cyc: number): SubStream[] {
 // on its own. A price change still counts (each price repeats). When no amount
 // repeats at all the service is usage-billed or brand new, and every charge
 // counts. Bills, transfers and yearly fees are never trimmed.
-function recurringMonthly(txns: SubMemberTxn[], streams: SubStream[], cyc: number, fixedPrice: boolean) {
+function recurringMonthly(txns: SubMemberTxn[], streams: SubStream[], cyc: number, mode: "fixed" | "bill" | "none") {
   const liveIds = new Set(streams.filter((st) => st.live).map((st) => st.id));
   const liveTx = txns.filter((t) => liveIds.has(streamKey(t)));
   const use = liveTx.length ? liveTx : txns;
-  if (!fixedPrice) return { monthly: round2(cycleStats(use, cyc).perCycle * (30.44 / cyc)), oneOffs: null };
+  if (mode === "none") return { monthly: round2(cycleStats(use, cyc).perCycle * (30.44 / cyc)), oneOffs: null };
   const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.5, 0.03 * Math.max(a, b));
   const amts = use.map((t) => Math.abs(t.amount));
   const repeats = (a: number) => amts.filter((b) => near(a, b)).length >= 2;
   // Mostly fixed prices (repeats cover at least half the charges) or it is usage-billed.
   const rep = use.filter((t) => repeats(Math.abs(t.amount)));
-  const regular = rep.length * 2 >= use.length ? rep : use;
+  let regular = rep.length * 2 >= use.length ? rep : use;
+  // A bill varies (an overage month, lumpy payments to a person are real), so
+  // per stream only a spike over twice a dominant price is a one-off: a $888
+  // refill against a run of $399 ones. No dominant price, nothing trimmed.
+  if (mode === "bill") {
+    const drop = new Set<SubMemberTxn>();
+    const byStream = new Map<string, SubMemberTxn[]>();
+    for (const t of use) { const k = streamKey(t); const a = byStream.get(k); if (a) a.push(t); else byStream.set(k, [t]); }
+    for (const ts of byStream.values()) {
+      const a = ts.map((t) => Math.abs(t.amount));
+      const top = a.map((x) => ({ x, n: a.filter((y) => near(x, y)).length })).sort((p, q) => q.n - p.n)[0];
+      if (!top || top.n < 3 || top.n * 2 < ts.length) continue;
+      for (const t of ts) if (Math.abs(t.amount) > 2 * top.x) drop.add(t);
+    }
+    regular = use.filter((t) => !drop.has(t));
+  }
   const anchor = dayNum(use[use.length - 1].date);
   const singles = use.filter((t) => !regular.includes(t) && dayNum(t.date) > anchor - 120);
   return {
@@ -834,7 +858,8 @@ function buildView(direction: "expense" | "income" = "expense"): { subs: Subscri
       s.variableAmount = st.variable || base.variableAmount;
       s.streams = streamsOf(txns, cyc);
       if (!overBroad) {
-        const r2 = recurringMonthly(txns, s.streams, cyc, s.type !== "bill" && s.type !== "transfer" && s.cadence !== "yearly" && s.cadence !== "quarterly");
+        const mode = s.type === "transfer" || s.cadence === "yearly" || s.cadence === "quarterly" ? "none" : s.type === "bill" ? "bill" : "fixed";
+        const r2 = recurringMonthly(txns, s.streams, cyc, mode);
         s.monthly = r2.monthly;
         s.perCycle = round2(r2.monthly * (cyc / 30.44));
         s.oneOffs = r2.oneOffs;
@@ -861,7 +886,9 @@ function buildView(direction: "expense" | "income" = "expense"): { subs: Subscri
     // cycles old. Manual rows are yours: they end only when you cancel them.
     const anyFound = members.some((m) => m.is_active);
     const lapsed = s.lastDate ? isLapsed(s.lastDate, s.intervalDays) : false;
-    s.isActive = r.source === "manual" && !txns.length ? true : anyFound && !lapsed;
+    // One charge alone is not a live subscription, unless it is a yearly fee.
+    const single = txns.length === 1 && s.cadence !== "yearly";
+    s.isActive = r.source === "manual" && !txns.length ? true : anyFound && !lapsed && !single;
     s.group = !s.isActive || s.state === "cancelled" ? "ended"
       : s.type === "transfer" ? "transfers" : s.type === "bill" ? "bills" : "subs";
     subs.push(s);
@@ -1140,7 +1167,8 @@ export function labelSubscriptions(): { typed: number; categorized: number } {
       let next = type;
       if (src === "rule") next = rule.type ?? type;
       else if (src === "ai") next = rule.brand ? rule.type : type;
-      else if (src === "legacy") next = rule.type === "transfer" || !type ? rule.type ?? type : type;
+      // A legacy type yields to a registry brand (Ro: healthcare, not a membership).
+      else if (src === "legacy") next = rule.brand ? rule.type : rule.type === "transfer" || !type ? rule.type ?? type : type;
       if (next !== type || (next && !r.type_source)) {
         setType.run(next, next === type && r.type_source ? r.type_source : "rule", r.id);
         if (next !== type) typed++;
