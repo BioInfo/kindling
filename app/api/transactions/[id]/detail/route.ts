@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { receiptForTxn } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
 
@@ -71,5 +72,21 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     authorizedDate: authDate && authDate !== t.date ? authDate : null,
     postedDate: t.date,
     pending: !!t.pending,
+    receipt: matchedReceipt(t.id),
   });
+}
+
+// The order receipt matched to this charge (lib/orders.ts), if any.
+function matchedReceipt(id: string) {
+  try {
+    const r = receiptForTxn(id);
+    if (!r) return null;
+    return {
+      kind: r.kind, orderId: r.order_id, date: r.date, total: r.total, split: r.how === "split",
+      labels: r.labels.filter((l) => !l.startsWith("Kindle book")),
+      items: r.items.slice(0, 20).map((i) => ({ name: i.name, qty: i.qty ?? null, price: i.price ?? null })),
+    };
+  } catch {
+    return null; // receipts are an extra, never a reason the modal fails
+  }
 }
