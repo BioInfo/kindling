@@ -241,7 +241,7 @@ export function gatherInsights(entity?: string | null): Insight[] {
     }
     // Obligations (mortgage, insurance, tolls) are not cancellable subscriptions;
     // the Subscriptions tab keeps them out of the unused/cut views too.
-    if (s.state !== "active" || s.isActive || s.monthly < 1 || s.type === "obligation") continue;
+    if (s.group !== "subs" || s.state !== "active" || s.isActive || s.monthly < 1) continue;
     const quiet = s.lastDate ? -daysUntil(s.lastDate) : 0;
     out.push({
       key: `sub-unused:${s.id}:${s.lastDate ?? ""}`,

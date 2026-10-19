@@ -7,6 +7,7 @@ import { captureSnapshot } from "./networth";
 import { syncHoldings } from "./holdings";
 import { refreshEquityQuotes } from "./equity";
 import { reconcileSubscriptions } from "./subscriptions";
+import { postSyncEnrich } from "./enrich";
 import { dedupeMergedTransactions, absorbById } from "./relink";
 import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 
@@ -93,6 +94,9 @@ export async function syncAllItems() {
   // recurring streams too (best-effort: a stream not yet ready / outage leaves
   // the prior subscriptions untouched, never fails the sync).
   try { await reconcileSubscriptions({ plaid: true }); } catch { /* keep prior subs */ }
+  // Merge, label and end subscriptions; a capped fast-lane LLM batch labels the
+  // rest. Never throws; a cold or busy model just leaves rows for next time.
+  try { await postSyncEnrich({ llm: true }); } catch { /* best-effort */ }
   return results;
 }
 
