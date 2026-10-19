@@ -943,10 +943,10 @@ function RulesPanel({ rules, reload }: { rules: Rule[]; reload: () => void }) {
       )}
       {rules.length === 0 && <div className="p-6 text-center" style={{ color: "var(--muted)" }}>No rules yet. The AI writes some automatically; add your own above.</div>}
       {rv.pageRows.map((r) => (
-        <div key={r.id} className="flex items-center gap-2 p-3 text-sm" style={{ borderTop: "1px solid var(--border)" }}>
+        <div key={r.id} className="flex flex-wrap items-center gap-2 p-3 text-sm" style={{ borderTop: "1px solid var(--border)" }}>
           <span className="text-xs rounded px-1.5 py-0.5" style={{ background: "var(--bg)", color: "var(--muted)" }}>{r.source}</span>
           <span style={{ color: "var(--muted)" }}>{r.field} {r.match_type}</span>
-          <span className="font-mono">{r.pattern}</span>
+          <span className="break-all font-mono">{r.pattern}</span>
           <span style={{ color: "var(--muted)" }}>→</span>
           <span>{r.category}{r.entity ? ` · ${r.entity}` : ""}{r.rename ? ` · "${r.rename}"` : ""}</span>
           <button onClick={() => del(r.id)} className="ml-auto rounded px-2 py-0.5 text-xs" style={{ background: "var(--bg)", color: "var(--bad)", border: "1px solid var(--border)" }}>delete</button>
