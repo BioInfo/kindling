@@ -157,7 +157,7 @@ function upsertTxn(t: Transaction) {
     plaid_detailed: pfcDetailed,
     // Rule wins; else map Plaid's primary into our taxonomy when it's a safe 1:1;
     // else keep the raw primary (stays low-confidence → review queue).
-    category: ruled.category ?? mapPfc(pfcPrimary) ?? pfcPrimary,
+    category: ruled.category ?? mapPfc(pfcPrimary, pfcDetailed) ?? pfcPrimary,
     category_source: ruled.category ? "rule" : "plaid",
     confidence: ruled.category ? 1.0 : 0.5,
     entity: ruled.entity ?? "personal",
