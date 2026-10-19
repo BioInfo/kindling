@@ -6,6 +6,7 @@ import { detectAnomalies } from "./anomalies";
 import { listBudgets } from "./budgets";
 import { listGoals } from "./goals";
 import { prettyCategory } from "./taxonomy";
+import { addDays, monthLocal, todayLocal } from "./dates";
 
 // Weekly digest: deterministic SQL aggregates over the trailing 7 days, narrated
 // by the local model. Same discipline as chat — every number is computed here in
@@ -66,14 +67,8 @@ function categoryMoves(start: string, end: string, pStart: string, pEnd: string)
     .slice(0, 5);
 }
 
-function addDays(date: string, days: number): string {
-  const d = new Date(date + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
 export function gatherStats(): SummaryStats {
-  const end = new Date().toISOString().slice(0, 10);
+  const end = todayLocal();
   const start = addDays(end, -6);          // trailing 7 days inclusive
   const pEnd = addDays(start, -1);
   const pStart = addDays(pEnd, -6);
@@ -331,7 +326,7 @@ function monthEndNet(ym: string): { date: string; net: number } | null {
 
 export function gatherMonthlyStats(): MonthlyStats {
   // Report the last *complete* month; current open month is glanced separately.
-  const currentMonth = (db().prepare(`SELECT strftime('%Y-%m','now') AS m`).get() as { m: string }).m;
+  const currentMonth = monthLocal();
   const reportMonth = numToYm(ymToNum(currentMonth) - 1);
   const prevMonth = numToYm(ymToNum(reportMonth) - 1);
 

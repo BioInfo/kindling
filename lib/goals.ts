@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { listBudgets } from "./budgets";
 import { taxView } from "./tax";
+import { addMonths, daysAgo, monthLocal, todayLocal, yearLocal } from "./dates";
 
 // Savings goals with derived progress + a monthly contribution nudge. `saved` is
 // the running total; v2 funds it by *logging deposits* (atomic increments) into
@@ -46,7 +47,7 @@ function tx<T>(fn: () => T): T {
 // / 30.44 so a 6-week deadline reads as ~1 month, not 0.
 function monthsUntil(deadline: string): number {
   const d = new Date(deadline + "T00:00:00Z").getTime();
-  const now = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z").getTime();
+  const now = new Date(todayLocal() + "T00:00:00Z").getTime();
   const days = (d - now) / 86400000;
   return Math.max(0, Math.floor(days / 30.44));
 }
@@ -60,10 +61,10 @@ function recentMonthlySavings(): number {
     `SELECT COALESCE(-SUM(t.amount), 0) AS net
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE a.type IN ('depository','credit')
-       AND t.date >= date('now','-30 days')
+       AND t.date >= ?
        AND COALESCE(t.category,'') NOT IN
          ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment','TRANSFER_OUT','TRANSFER_IN')`
-  ).get() as { net: number };
+  ).get(daysAgo(30)) as { net: number };
   return round2(r.net ?? 0);
 }
 
@@ -92,7 +93,7 @@ export function listGoals(): GoalsView {
        CASE WHEN deadline IS NULL THEN 1 ELSE 0 END, deadline ASC, id ASC`
   ).all() as unknown as Goal[];
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   const goals: GoalRow[] = rows.map((g) => {
     const remaining = round2(Math.max(0, g.target - g.saved));
     const done = g.saved >= g.target;
@@ -201,10 +202,10 @@ export function suggestGoals(): SuggestGoalsView {
     `SELECT strftime('%Y-%m', t.date) AS ym, SUM(t.amount) AS spent
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE a.type IN ('depository','credit') AND t.amount > 0
-       AND t.date >= date('now','start of month','-6 months') AND t.date < strftime('%Y-%m-01','now')
+       AND t.date >= ? AND t.date < ?
        AND COALESCE(t.category,'') NOT IN ('Transfer:Internal','Transfer:Brokerage','Transfer:P2P','CreditCardPayment','Taxes','TRANSFER_OUT')
      GROUP BY ym ORDER BY ym`
-  ).all() as { ym: string; spent: number }[];
+  ).all(`${addMonths(monthLocal(), -6)}-01`, `${monthLocal()}-01`) as { ym: string; spent: number }[];
   const months = monthRows.map((r) => r.spent).sort((a, b) => a - b);
   const monthlySpend = months.length ? (months.length % 2 ? months[(months.length - 1) / 2] : (months[months.length / 2 - 1] + months[months.length / 2]) / 2) : 0;
   if (monthlySpend > 0 && !has("emergency fund")) {
@@ -215,7 +216,7 @@ export function suggestGoals(): SuggestGoalsView {
   }
 
   // 2 & 3 from the tax view (skip silently if no tax profile is set up yet).
-  const year = new Date().getFullYear();
+  const year = yearLocal();
   try {
     const tv = taxView(year);
     if (tv.safeHarbor.gap > 0 && !has(`${year} tax reserve`)) {

@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { CATEGORIES } from "./taxonomy";
 import { detectRecurring } from "./recurring";
+import { addMonths, monthLocal, startOfMonth, todayLocal } from "./dates";
 
 // Per-category monthly budgets vs this calendar month's actual spend. Targets
 // are global; actuals respect the entity filter so personal vs business read
@@ -77,7 +78,7 @@ function globalMonthlySpend(): Map<string, Map<string, number>> {
 // transactions; the current (open) month is never snapshotted. Cheap — a few
 // categories × a few months — so it's safe to run on every budgets read.
 export function reconcileRolloverLedger(): void {
-  const thisMonth = (db().prepare(`SELECT strftime('%Y-%m','now','localtime') AS m`).get() as { m: string }).m;
+  const thisMonth = monthLocal();
   const lastClosed = numToYm(ymToNum(thisMonth) - 1);
   const rb = db().prepare(
     `SELECT category, amount, strftime('%Y-%m', created_at) AS start FROM budgets WHERE rollover = 1`
@@ -117,24 +118,22 @@ function currentCarryByCategory(thisMonth: string): Map<string, number> {
 }
 
 function monthMeta(): MonthMeta {
-  const r = db().prepare(
-    `SELECT strftime('%Y-%m','now','localtime') AS month,
-            CAST(strftime('%d','now','localtime') AS INTEGER) AS dayOfMonth,
-            CAST(strftime('%d', date('now','localtime','start of month','+1 month','-1 day')) AS INTEGER) AS daysInMonth`
-  ).get() as { month: string; dayOfMonth: number; daysInMonth: number };
+  const today = todayLocal();
+  const [y, m, day] = today.split("-").map(Number);
+  const r = { month: today.slice(0, 7), dayOfMonth: day, daysInMonth: new Date(Date.UTC(y, m, 0)).getUTCDate() };
   return { ...r, progress: r.daysInMonth ? r.dayOfMonth / r.daysInMonth : 1 };
 }
 
 // This calendar month's spend per category (positive = outflow), entity-filtered.
 function monthSpendByCategory(entity?: string | null): Map<string, number> {
-  const args: unknown[] = [];
+  const args: unknown[] = [startOfMonth(todayLocal())];
   let entityClause = "";
   if (entity) { entityClause = "AND entity = ?"; args.push(entity); }
   const rows = db().prepare(
     `SELECT category AS c, SUM(amount) AS spent
      FROM transactions
      WHERE amount > 0 AND category IS NOT NULL
-       AND date >= date('now','localtime','start of month')
+       AND date >= ?
        ${entityClause}
      GROUP BY category`
   ).all(...(args as never[])) as unknown as { c: string; spent: number }[];
@@ -250,7 +249,7 @@ export function suggestBudgets(entity?: string | null, windowMonths = 6): Sugges
   ).get() as { m: number | null };
   const win = Math.max(1, Math.min(windowMonths, span?.m ?? windowMonths));
 
-  const args: unknown[] = [];
+  const args: unknown[] = [`${addMonths(monthLocal(), -win)}-${todayLocal().slice(8)}`];
   let entityClause = "";
   if (entity) { entityClause = "AND entity = ?"; args.push(entity); }
 
@@ -260,7 +259,7 @@ export function suggestBudgets(entity?: string | null, windowMonths = 6): Sugges
             SUM(amount) AS mtot, MAX(amount) AS mmax
      FROM transactions
      WHERE amount > 0 AND category IS NOT NULL
-       AND date >= date('now','-${win} months')
+       AND date >= ?
        ${entityClause}
      GROUP BY category, ym`
   ).all(...(args as never[])) as unknown as { c: string; ym: string; mtot: number; mmax: number }[];

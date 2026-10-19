@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { listEquity } from "./equity";
+import { todayLocal } from "./dates";
 
 // Tax planning — deterministic. The actionable number (safe-harbor target) is built
 // from the user's REAL prior-year tax, not bracket math, so it's exact. Bracket /
@@ -62,7 +63,7 @@ function vaDeadlines(year: number) {
     { q: 3, due: `${year}-09-15` }, { q: 4, due: `${year + 1}-01-15` },
   ];
 }
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayLocal();
 function daysBetween(from: string, to: string): number {
   const a = new Date(from + "T00:00:00Z").getTime(), b = new Date(to + "T00:00:00Z").getTime();
   return Math.round((b - a) / 86400000);

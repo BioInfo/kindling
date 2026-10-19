@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { detectRecurring } from "./recurring";
+import { addDays, daysAgo as dateNDaysAgo, daysBetween, todayLocal as today } from "./dates";
 
 // Relative anomalies that the flat "ABS >= 1000" review rule misses: a charge
 // that spiked vs a merchant's own history, a possible duplicate, a first-time
@@ -35,21 +36,6 @@ const median = (xs: number[]) => {
 const usd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const norm = (s: string) =>
   s.toLowerCase().replace(/\s+#?\d{2,}.*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-const daysBetween = (a: string, b: string) =>
-  Math.abs((+new Date(b + "T00:00:00Z") - +new Date(a + "T00:00:00Z")) / 86400000);
-function dateNDaysAgo(n: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function addDays(date: string, days: number): string {
-  const d = new Date(date + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + Math.round(days));
-  return d.toISOString().slice(0, 10);
-}
 
 export function detectAnomalies(opts: { entity?: string | null; windowDays?: number } = {}): Anomaly[] {
   const win = opts.windowDays ?? 30;
@@ -63,8 +49,8 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
   const freshAccounts = new Set(
     (db().prepare(
       `SELECT a.id FROM accounts a JOIN items i ON a.item_id = i.id
-       WHERE date(i.created_at) >= date('now', ?)`
-    ).all(`-${win} days`) as unknown as { id: string }[]).map((r) => r.id)
+       WHERE date(i.created_at) >= ?`
+    ).all(dateNDaysAgo(win)) as unknown as { id: string }[]).map((r) => r.id)
   );
 
   const rows = db().prepare(
@@ -72,9 +58,9 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
      FROM transactions
      WHERE amount > 0 AND COALESCE(merchant, name) IS NOT NULL
        AND category NOT IN ('Transfer:Internal','CreditCardPayment')
-       AND date >= date('now','-365 days') ${entityClause}
+       AND date >= ? ${entityClause}
      ORDER BY date ASC`
-  ).all(...(args as never[])) as unknown as Row[];
+  ).all(dateNDaysAgo(365), ...(args as never[])) as unknown as Row[];
 
   const byMerchant = new Map<string, Row[]>();
   for (const r of rows) {

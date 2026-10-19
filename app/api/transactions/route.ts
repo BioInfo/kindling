@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { REVIEW_WHERE } from "@/lib/categorize";
+import { daysAgo } from "@/lib/dates";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ export async function GET(req: NextRequest) {
   if (category) { conds.push(category === "Uncategorized" ? "(t.category IS NULL OR t.category = '')" : "t.category = ?"); if (category !== "Uncategorized") fargs.push(category); }
   if (account) { conds.push("t.account_id = ?"); fargs.push(account); }
   if (q) { conds.push("(COALESCE(t.merchant, t.name) LIKE ? OR t.name LIKE ?)"); fargs.push(`%${q}%`, `%${q}%`); }
-  if (days && Number(days) > 0) { conds.push("t.date >= date('now', ?)"); fargs.push(`-${Number(days)} days`); }
+  if (days && Number(days) > 0) { conds.push("t.date >= ?"); fargs.push(daysAgo(Number(days))); }
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
 
   const txns = d.prepare(

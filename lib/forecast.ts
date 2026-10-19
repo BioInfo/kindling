@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { detectRecurring, isLapsed } from "./recurring";
+import { addDays, todayLocal as today } from "./dates";
 
 // Cash-flow forecast: project liquid cash forward from detected recurring income
 // + bills, plus an optional discretionary burn layer (v2). The scheduled layer
@@ -162,15 +163,6 @@ function liquidCash(): number {
      FROM accounts WHERE type = 'depository'`
   ).get() as { cash: number };
   return round2(r.cash ?? 0);
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-function addDays(date: string, days: number): string {
-  const d = new Date(date + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + Math.round(days));
-  return d.toISOString().slice(0, 10);
 }
 
 export function forecast(opts: { days?: number; discretionary?: boolean } = {}): Forecast {

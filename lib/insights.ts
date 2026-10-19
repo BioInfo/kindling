@@ -7,6 +7,7 @@ import { taxView } from "./tax";
 import { listSubscriptions } from "./subscriptions";
 import { prettyCategory } from "./taxonomy";
 import { chat } from "./llm";
+import { todayLocal, yearLocal } from "./dates";
 
 // ── Proactive insights feed ("What to know") ────────────────────────────────
 // The MOAT layer: one ranked, dismissable feed that tells you the few things
@@ -42,7 +43,7 @@ export type Insight = {
 
 const usd = (n: number) =>
   "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayLocal();
 const daysUntil = (date: string) =>
   Math.round((+new Date(date + "T00:00:00Z") - +new Date(today() + "T00:00:00Z")) / 86400000);
 const whenLabel = (d: number) => (d <= 0 ? "today" : d === 1 ? "tomorrow" : `in ${d} days`);
@@ -180,7 +181,7 @@ export function gatherInsights(entity?: string | null): Insight[] {
   // 5. Tax horizon. An estimated payment coming due (urgent near the deadline),
   //    the nearest big vesting event to set money aside for, and — when nothing
   //    is owed — a single reassuring "on track" line so the feed isn't all alarm.
-  const tax = taxView(new Date().getFullYear());
+  const tax = taxView(yearLocal());
   if (tax.nextDue && tax.nextDue.amount > 0) {
     const d = tax.nextDue.daysUntil;
     out.push({

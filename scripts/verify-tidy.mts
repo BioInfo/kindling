@@ -13,6 +13,15 @@ const { POST: createRule } = await import("../app/api/rules/route.ts");
 const { NextRequest } = await import("next/server");
 
 const ok = (l: string, c: boolean, extra = "") => { console.log(`${c ? "PASS" : "FAIL"}  ${l}${extra ? " — " + extra : ""}`); if (!c) process.exitCode = 1; };
+
+// ---- Local dates (TZ_LOCAL defaults to America/New_York).
+const { todayLocal, monthLocal, addMonths } = await import("../lib/dates.ts");
+const evening = new Date("2026-10-31T01:30:00Z"); // 9:30pm EDT on Oct 30
+ok("9:30pm ET is still today, not tomorrow", todayLocal(evening) === "2026-10-30", todayLocal(evening));
+const lastEve = new Date("2026-11-01T02:00:00Z"); // 10pm EDT on Oct 31
+ok("last evening of a month is still that month", monthLocal(lastEve) === "2026-10", monthLocal(lastEve));
+ok("winter offset: 7:30pm EST on Dec 31 is still 2026", todayLocal(new Date("2027-01-01T00:30:00Z")) === "2026-12-31");
+ok("addMonths wraps the year", addMonths("2026-01", -1) === "2025-12" && addMonths("2026-11", 2) === "2027-01");
 const d = db();
 const rule = d.prepare(`INSERT INTO rules (match_type, pattern, field, category, entity, rename, priority, source) VALUES (?,?,?,?,?,?,?,?)`);
 const insTxn = d.prepare(
