@@ -50,6 +50,48 @@ try {
   await post({ match_type: "contains", pattern: "zza_b", category: "Travel", applyNow: true });
   ok("apply-now treats _ literally", cat("zzv-4") === "Travel" && cat("zzv-3") === "Shopping",
     `zza_b=${cat("zzv-4")} zzaxb=${cat("zzv-3")}`);
+
+  // ---- Task 4: alert noise. Real snapshot rows plus fixtures dated this week.
+  const day = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const fx = d.prepare(
+    `INSERT INTO transactions (id, account_id, date, name, merchant, amount, category, category_source, confidence)
+     VALUES (?, (SELECT id FROM accounts LIMIT 1), ?, ?, ?, ?, 'Shopping', 'rule', 1.0)`,
+  );
+  // A real double-bill: monthly $49.99, then charged twice two days apart.
+  for (const n of [92, 62, 32]) fx.run(`zzn-${n}`, day(n), "ZZSTREAM", "ZZSTREAM", 49.99);
+  fx.run("zzn-a", day(4), "ZZSTREAM", "ZZSTREAM", 49.99);
+  fx.run("zzn-b", day(3), "ZZSTREAM", "ZZSTREAM", 49.99);
+  // One cluster: three identical $80 charges within 3 days of each other.
+  for (const n of [5, 4, 3]) fx.run(`zzc-${n}`, day(n), "ZZCLUSTER", "ZZCLUSTER", 80);
+
+  const { detectAnomalies } = await import("../lib/anomalies.ts");
+  const an = detectAnomalies({ windowDays: 30 });
+  const dupes = an.filter((a) => a.kind === "duplicate");
+  const has = (re: RegExp) => dupes.some((a) => re.test(a.detail));
+  ok("no duplicate flag for $3 MTA fares", !has(/ at MTA /), dupes.map((a) => a.detail).join(" | "));
+  ok("no duplicate flag for $10 Apple Cash / Opencode", !has(/APPLE CASH|Opencode/i));
+  ok("no duplicate flag for the habitual Venmo $1,289 transfer", !has(/Venmo/));
+  ok("a real double-bill still fires (positive control)", has(/ZZSTREAM/));
+  const cl = dupes.filter((a) => /ZZCLUSTER/.test(a.detail));
+  ok("a 3-charge cluster is one flag", cl.length === 1 && /3×/.test(cl[0]?.detail ?? ""), cl.map((a) => a.detail).join(" | "));
+  const spikes = an.filter((a) => a.kind === "spike");
+  ok("ordinary Amazon orders are not spikes", !spikes.some((a) => a.merchant === "Amazon"), spikes.map((a) => a.detail).join(" | "));
+  ok("Washington Gas 9× its usual still spikes (positive control)", spikes.some((a) => a.merchant === "Washington Gas"));
+
+  // Insights: page through the whole feed by dismissing each page in turn.
+  const { gatherInsights } = await import("../lib/insights.ts");
+  const { listSubscriptions } = await import("../lib/subscriptions.ts");
+  const dismiss = d.prepare(`INSERT OR IGNORE INTO dismissed_insights (insight_id) VALUES (?)`);
+  const keys: string[] = [];
+  for (let guard = 0; guard < 50; guard++) {
+    const page = gatherInsights();
+    if (!page.length) break;
+    for (const i of page) { keys.push(i.key); dismiss.run(i.key); }
+  }
+  const obligations = listSubscriptions().subs.filter((s) => s.type === "obligation" && s.state === "active" && !s.isActive && s.monthly >= 1);
+  const leaked = obligations.filter((s) => keys.some((k) => k.startsWith(`sub-unused:${s.id}:`)));
+  ok(`no "looks unused" insight for an obligation (${obligations.length} candidates)`, obligations.length > 0 && leaked.length === 0,
+    leaked.map((s) => s.merchant).join(", "));
 } finally {
   d.exec("ROLLBACK");
 }

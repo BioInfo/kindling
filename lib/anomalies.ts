@@ -19,6 +19,19 @@ export type Anomaly = {
 
 type Row = { id: string; account_id: string; date: string; merchant: string; amount: number; category: string | null };
 
+// Tuning, checked against the 2026-10-18 snapshot (scripts/verify-tidy.mts).
+const SPIKE_MIN_HISTORY = 2;  // prior charges before a "usual" exists
+const SPIKE_RATIO = 3;        // × the merchant's median
+const SPIKE_MIN_USD = 50;     // and at least this far above it
+const SPIKE_OVER_MAX = 1.25;  // and above the merchant's prior high by this factor
+const DUP_MIN_USD = 25;       // below this a repeat is a fare, a tip, a top-up
+const DUP_HABIT_RUNS = 2;     // other same-amount close repeats = habit, not error
+
+const isTransfer = (c: string | null) => !!c && (c.startsWith("Transfer:") || c.startsWith("TRANSFER_"));
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
 const usd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const norm = (s: string) =>
   s.toLowerCase().replace(/\s+#?\d{2,}.*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
@@ -74,18 +87,21 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
 
   const recentCut = dateNDaysAgo(win);
   const out: Anomaly[] = [];
-  const dupSeen = new Set<string>();
 
-  for (const [k, g] of byMerchant) {
+  for (const [, g] of byMerchant) {
     for (let i = 0; i < g.length; i++) {
       const t = g[i];
       if (t.date < recentCut) continue;
       const prior = g.slice(0, i).map((x) => x.amount);
-      if (prior.length >= 2) {
-        const mean = prior.reduce((s, x) => s + x, 0) / prior.length;
-        if (mean > 0 && t.amount >= mean * 2.5 && t.amount - mean >= 25) {
+      if (prior.length >= SPIKE_MIN_HISTORY) {
+        // Median, not mean, and the charge must also top the merchant's own
+        // prior high: a merchant whose basket swings (Amazon: $3 to $222) is
+        // not spiking when it lands inside the range it already has.
+        const med = median(prior);
+        const hi = Math.max(...prior);
+        if (med > 0 && t.amount >= med * SPIKE_RATIO && t.amount - med >= SPIKE_MIN_USD && t.amount > hi * SPIKE_OVER_MAX) {
           out.push({ kind: "spike", key: `spike:${t.id}`, id: t.id, date: t.date, merchant: t.merchant, amount: t.amount,
-            detail: `${(t.amount / mean).toFixed(1)}× your usual ${usd(mean)} at ${t.merchant}` });
+            detail: `${(t.amount / med).toFixed(1)}× your usual ${usd(med)} at ${t.merchant}` });
         }
       } else if (prior.length === 0 && t.amount >= 250 && !freshAccounts.has(t.account_id)) {
         // Only flag a sizeable first-time charge — a small new merchant isn't an
@@ -94,17 +110,28 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
           detail: `First charge from ${t.merchant} (${usd(t.amount)})` });
       }
     }
-    for (let i = 1; i < g.length; i++) {
-      const a = g[i - 1], b = g[i];
-      if (b.date < recentCut) continue;
-      if (Math.abs(a.amount - b.amount) < 0.01 && daysBetween(a.date, b.date) <= 3) {
-        const key = `${k}|${b.amount}|${b.date}`;
-        if (!dupSeen.has(key)) {
-          dupSeen.add(key);
-          out.push({ kind: "duplicate", key: `duplicate:${b.id}`, id: b.id, date: b.date, merchant: b.merchant, amount: b.amount,
-            detail: `Possible duplicate: ${usd(b.amount)} at ${b.merchant} on ${a.date} and ${b.date}` });
-        }
-      }
+    // Duplicates: a run of same-amount charges each within 3 days of the last is
+    // ONE flag, keyed on the run's second charge (a pair keeps its old key, so
+    // earlier dismissals hold). Skipped: small amounts (a $3 fare twice is a
+    // commute), transfers you sent (two identical P2P sends are deliberate),
+    // and merchants that habitually repeat the same amount days apart.
+    const runs: Row[][] = [];
+    for (const t of g) {
+      const run = runs[runs.length - 1];
+      const last = run?.[run.length - 1];
+      if (last && Math.abs(last.amount - t.amount) < 0.01 && daysBetween(last.date, t.date) <= 3) run.push(t);
+      else runs.push([t]);
+    }
+    const repeats = runs.filter((r) => r.length >= 2);
+    for (const run of repeats) {
+      const a = run[0], b = run[1], z = run[run.length - 1];
+      if (z.date < recentCut || b.amount < DUP_MIN_USD) continue;
+      if (run.some((x) => isTransfer(x.category))) continue;
+      const habitual = repeats.filter((r) => r !== run && Math.abs(r[0].amount - b.amount) < 0.01).length >= DUP_HABIT_RUNS;
+      if (habitual) continue;
+      const span = run.length === 2 ? `on ${a.date} and ${z.date}` : `${run.length}× between ${a.date} and ${z.date}`;
+      out.push({ kind: "duplicate", key: `duplicate:${b.id}`, id: b.id, date: z.date, merchant: b.merchant, amount: b.amount,
+        detail: `Possible duplicate: ${usd(b.amount)} at ${b.merchant} ${span}` });
     }
   }
 
@@ -115,6 +142,9 @@ export function detectAnomalies(opts: { entity?: string | null; windowDays?: num
   const dueHorizon = addDays(now, 7);
   for (const r of detectRecurring({ entity: opts.entity })) {
     if (r.direction !== "expense") continue;
+    // A recurring transfer is money you move, not a bill; sub-dollar streams
+    // (withholding pennies) are not worth an alert.
+    if (isTransfer(r.category) || r.avgAmount < 1) continue;
 
     // Price hike: the most recent charge is materially above the merchant's
     // historical average. avgAmount includes the last charge, which only damps
