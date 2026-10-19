@@ -104,7 +104,8 @@ export function gatherStats(): SummaryStats {
     linkedExcluded: round2(trend.linkedExcluded),
   };
 
-  const rec = detectRecurring();
+  // A stream that stopped charging is history, not part of the monthly load.
+  const rec = detectRecurring().filter((r) => !r.lapsed);
   const recurring = {
     count: rec.length,
     monthlyExpense: round2(rec.filter((r) => r.direction === "expense").reduce((s, r) => s + r.monthly, 0)),

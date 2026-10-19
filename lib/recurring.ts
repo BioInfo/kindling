@@ -19,6 +19,7 @@ export type Recurring = {
   monthly: number;        // amount normalized to a monthly figure
   priceChange: number;    // lastAmount − avgAmount (positive = the latest charge jumped)
   variableAmount: boolean; // amount swings enough to be usage-based (e.g. AWS, OpenAI)
+  lapsed: boolean;        // missed two cycles: history, not a future charge (see isLapsed)
 };
 
 type Row = { date: string; merchant: string; amount: number; category: string | null };
@@ -146,6 +147,7 @@ export function detectRecurring(opts: { entity?: string | null; minOccurrences?:
       monthly: round2(mean * (30.44 / gap)),
       priceChange: round2(Math.abs(last.amount) - mean),
       variableAmount: cv > 0.35,
+      lapsed: isLapsed(last.date, gap),
     });
   }
   return out.sort((a, b) => b.monthly - a.monthly);

@@ -236,8 +236,9 @@ export function forecast(opts: { days?: number; discretionary?: boolean } = {}):
 
   const totalIn = round2(events.filter((e) => e.amount > 0).reduce((s, e) => s + e.amount, 0));
   const totalOut = round2(events.filter((e) => e.amount < 0).reduce((s, e) => s - e.amount, 0));
-  const monthlyIn = round2(rec.filter((r) => r.direction === "income").reduce((s, r) => s + r.monthly, 0));
-  const monthlyOut = round2(rec.filter((r) => r.direction === "expense").reduce((s, r) => s + r.monthly, 0));
+  const live = rec.filter((r) => !r.lapsed);
+  const monthlyIn = round2(live.filter((r) => r.direction === "income").reduce((s, r) => s + r.monthly, 0));
+  const monthlyOut = round2(live.filter((r) => r.direction === "expense").reduce((s, r) => s + r.monthly, 0));
   const discretionaryOut = round2(dailyBurn * horizonDays);
 
   return {

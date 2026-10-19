@@ -278,7 +278,7 @@ export function suggestBudgets(entity?: string | null, windowMonths = 6): Sugges
   // Detected recurring expense, normalized to a monthly figure per category.
   const recByCat = new Map<string, number>();
   for (const x of detectRecurring({ entity })) {
-    if (x.direction !== "expense" || !x.category) continue;
+    if (x.direction !== "expense" || !x.category || x.lapsed) continue;
     if (!(BUDGETABLE as readonly string[]).includes(x.category)) continue;
     recByCat.set(x.category, round2((recByCat.get(x.category) ?? 0) + x.monthly));
   }
