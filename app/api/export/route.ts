@@ -6,8 +6,12 @@ export const dynamic = "force-dynamic";
 // CSV export of transactions, filtered by entity + optional date range. Built for
 // the business-expense / tax view, but works for any filter.
 function cell(v: unknown): string {
-  const s = v == null ? "" : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  let s = v == null ? "" : String(v);
+  // Text fields (merchant/name come from Plaid and edits) that start with a
+  // formula trigger are run by Excel/Sheets; a leading ' neutralises them.
+  // Numbers (amount) are left alone so negatives stay numeric.
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 export async function GET(req: NextRequest) {
