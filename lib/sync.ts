@@ -8,6 +8,7 @@ import { syncHoldings } from "./holdings";
 import { refreshEquityQuotes } from "./equity";
 import { reconcileSubscriptions } from "./subscriptions";
 import { postSyncEnrich } from "./enrich";
+import { classifyNewTransactions } from "./recategorize";
 import { dedupeMergedTransactions, absorbById } from "./relink";
 import type { Transaction, RemovedTransaction, AccountBase } from "plaid";
 
@@ -93,6 +94,9 @@ export async function syncAllItems() {
   // Refresh subscription detection from the freshly-synced data, pulling Plaid's
   // recurring streams too (best-effort: a stream not yet ready / outage leaves
   // the prior subscriptions untouched, never fails the sync).
+  // Categorize what rules did not settle (receipts, then a capped fast-lane LLM
+  // batch) before subscriptions read the categories. Never throws.
+  try { await classifyNewTransactions({ llm: true }); } catch { /* best-effort */ }
   try { await reconcileSubscriptions({ plaid: true }); } catch { /* keep prior subs */ }
   // Merge, label and end subscriptions; a capped fast-lane LLM batch labels the
   // rest. Never throws; a cold or busy model just leaves rows for next time.

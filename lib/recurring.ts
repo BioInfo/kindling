@@ -42,6 +42,7 @@ export function isLapsed(lastDate: string, intervalDays: number, asOf = new Date
 // Discretionary categories where a merchant is visited, not billed.
 const VISIT_CATS = new Set([
   "Dining", "Food", "Groceries", "Travel", "Shopping", "Entertainment",
+  "Electronics", "Household", "Clothing", "Pets", "Personal Care",
   "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "TRAVEL", "ENTERTAINMENT",
 ]);
 

@@ -162,7 +162,7 @@ const BRANDS: Brand[] = [
   { re: /robinhood|vanguard|fidelity|schwab|betterment|wealthfront|acorns|coinbase|\bbrokerage\b/, brand: "brokerage", type: T, category: "Transfer:Brokerage", group: "Savings & investing", noMerge: true },
   { re: /^invest$|^invest /, brand: "invest", type: T, category: "Transfer:Brokerage", group: "Savings & investing", noMerge: true },
   // A real payment out (owner, 2026-10-18), not a move between own accounts.
-  { re: /jpmorgan chase ext trnsfr/, brand: "jpm-ext-payment", type: B, category: "Other", group: "Payments" },
+  { re: /jpmorgan chase ext trnsfr/, brand: "jpm-ext-payment", type: B, category: "Loan Payments", group: "Payments" },
   { re: /ext trnsfr|external transfer|online transfer|transfer to /, brand: "ext-transfer", type: T, category: "Transfer:Internal", group: "Savings & investing", noMerge: true },
   // Housing, loans, insurance, utilities, government.
   { re: /pennymac/, brand: "pennymac", label: "PennyMac mortgage", type: B, category: "Mortgage", group: "Housing" },
